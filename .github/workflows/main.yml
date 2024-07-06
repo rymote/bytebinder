@@ -55,7 +55,19 @@ jobs:
         run: |
           mkdir -p package/include package/lib
           cp -r include package/include
-          cp build/lib${{ env.PROJECT_NAME }}_${{ matrix.type }}.a package/lib/bytebinder_${{ env.OS_NAME }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.a
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            if [[ "${{ matrix.type }}" == "shared" ]]; then
+              cp build/${{ env.PROJECT_NAME }}.dll package/lib/bytebinder_${{ env.OS_NAME }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.dll
+            else
+              cp build/${{ env.PROJECT_NAME }}.lib package/lib/bytebinder_${{ env.OS_NAME }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.lib
+            fi
+          else
+            if [[ "${{ matrix.type }}" == "shared" ]]; then
+              cp build/lib${{ env.PROJECT_NAME }}.so package/lib/bytebinder_${{ env.OS_NAME }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.so
+            else
+              cp build/lib${{ env.PROJECT_NAME }}.a package/lib/bytebinder_${{ env.OS_NAME }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.a
+            fi
+          fi
         shell: bash
 
       - name: Archive Library
