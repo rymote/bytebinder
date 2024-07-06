@@ -50,12 +50,13 @@ set_target_properties(${PROJECT_NAME}-static PROPERTIES OUTPUT_NAME ${PROJECT_NA
 set_target_properties(${PROJECT_NAME}-shared PROPERTIES OUTPUT_NAME ${PROJECT_NAME})
 
 set_target_properties(${PROJECT_NAME}-shared PROPERTIES
-    OUTPUT_NAME ${PROJECT_NAME}$<$<CONFIG:Debug>:_debug>
+    OUTPUT_NAME ${PROJECT_NAME}
     PUBLIC_HEADER "${HEADERS}"
 )
 
 set_target_properties(${PROJECT_NAME}-static PROPERTIES
-    OUTPUT_NAME ${PROJECT_NAME}$<$<CONFIG:Debug>:_debug>
+    OUTPUT_NAME ${PROJECT_NAME}
+    PUBLIC_HEADER "${HEADERS}"
 )
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
