@@ -191,3 +191,18 @@ TEST_CASE("Memory comparison validation", "[mem]") {
         REQUIRE(memory.compare("Hello", 5) == true);
     }
 }
+
+int testInitValue = 5;
+static bb::init_func InitFunc([] {
+    testInitValue = 10;
+});
+
+TEST_CASE("Initializer system", "[mem]") {
+    SECTION("Initial value of the test variable is correctly set") {
+        REQUIRE(testInitValue == 5);
+    }
+    bb::run_init_funcs();
+    SECTION("Test variable has the correct value after init funcs ran") {
+        REQUIRE(testInitValue == 10);
+    }
+}
