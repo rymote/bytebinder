@@ -71,9 +71,10 @@ jobs:
         shell: bash
 
       - name: Archive Library
-        uses: montudor/action-zip@v1
+        uses: vimtor/action-zip@v1.2
         with:
-          args: zip -r bytebinder_${{ env.OS_NAME }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.zip package
+          files: package/
+          dest: bytebinder_${{ env.OS_NAME }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.zip
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v3
