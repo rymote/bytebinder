@@ -23,7 +23,6 @@
 #include "scoped_unlock.h"
 #include "mem.h"
 #include "pattern.h"
-#include "trampoline.h"
 #include "init_system.h"
 
 namespace bb = bytebinder;
