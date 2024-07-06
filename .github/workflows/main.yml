@@ -38,9 +38,10 @@ jobs:
       - name: Configure CMake
         run: |
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cmake -B build -G "Visual Studio 16 2019" -A x64 -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DPOLYHOOK_BUILD_STATIC_RUNTIME=ON
+            cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DPOLYHOOK_BUILD_STATIC_RUNTIME=ON
           else
-            cmake -B build -G "Ninja" -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DPOLYHOOK_BUILD_STATIC_RUNTIME=ON
+            cmake -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DPOLYHOOK_BUILD_STATIC_RUNTIME=ON
+          fi
         shell: bash
 
       - name: Build
