@@ -20,7 +20,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
-          submodules: recursive  # This option ensures all submodules are fetched
+          submodules: recursive
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -36,23 +36,27 @@ jobs:
       - name: Build
         run: cmake --build build --config ${{ matrix.build_type }}
 
+      - name: Normalize OS Name
+        id: normalize_os
+        run: echo "OS_NAME=$(echo ${{ matrix.os }} | sed 's/-latest//')" >> $GITHUB_ENV
+
       - name: Package Files
         run: |
           mkdir -p package/include package/lib
           cp -r include package/include
-          cp build/lib${{ env.PROJECT_NAME }}_${{ matrix.type }}.a package/lib/bytebinder_${{ matrix.os | replace('-latest', '') }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.a
+          cp build/lib${{ env.PROJECT_NAME }}_${{ matrix.type }}.a package/lib/bytebinder_${{ env.OS_NAME }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.a
         shell: bash
 
       - name: Archive Library
         uses: montudor/action-zip@v1
         with:
-          args: zip -r bytebinder_${{ matrix.os | replace('-latest', '') }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.zip package
+          args: zip -r bytebinder_${{ env.OS_NAME }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.zip package
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v3
         with:
-          name: bytebinder_${{ matrix.os | replace('-latest', '') }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.zip
-          path: bytebinder_${{ matrix.os | replace('-latest', '') }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.zip
+          name: bytebinder_${{ env.OS_NAME }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.zip
+          path: bytebinder_${{ env.OS_NAME }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.zip
 
   release:
     needs: build
@@ -79,6 +83,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./${{ matrix.os | replace('-latest', '') }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.zip
-          asset_name: bytebinder_${{ matrix.os | replace('-latest', '') }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.zip
+          asset_path: ./bytebinder_${{ env.OS_NAME }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.zip
+          asset_name: bytebinder_${{ env.OS_NAME }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.zip
           asset_content_type: application/zip
