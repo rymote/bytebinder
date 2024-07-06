@@ -1,6 +1,20 @@
-# bytebinder
+<div align="center">
+    <a href="https://github.com/rymote/bytebinder"><img src="https://github.com/rymote/bytebinder/assets/10540277/4fd6247f-d54c-44ce-9e3c-3ebea5ff8807" alt="rymote/bytebinder" /></a>
+</div>
+<br />
 
-**bytebinder** is a powerful C++ library designed for low-level memory manipulation and management. This library provides a suite of tools to read, write, hook, and manipulate memory addresses in a cross-platform manner, supporting both Windows and Unix-like operating systems.
+<div align="center">
+  bytebinder - Low-level memory manipulation and management library
+</div>
+
+<div align="center">
+  <sub>
+    Brought to you by 
+    <a href="https://github.com/martonp96">@martonp96</a>,
+    <a href="https://github.com/jovanivanovic">@jovanivanovic</a>,
+    <a href="https://github.com/rymote">@rymote</a>
+  </sub>
+</div>
 
 ## Features
 
@@ -11,3 +25,21 @@
 - **Memory Scanning and Pattern Matching**: Search for patterns in memory to locate specific data.
 - **Memory Watching**: Monitor changes in memory and trigger callbacks on modifications.
 - **Error Handling**: Robust error handling with detailed exception messages.
+
+## Installation
+
+```cpp
+// TODO
+```
+
+## Usage
+
+```cpp
+// TODO
+```
+
+## Reference
+
+```cpp
+// TODO
+```
