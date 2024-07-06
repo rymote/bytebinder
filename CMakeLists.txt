@@ -37,7 +37,6 @@ include_directories(include)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/deps/polyhook)
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/deps/polyhook)
-#include_directories(${CMAKE_CURRENT_SOURCE_DIR}/deps/polyhook/asmjit/src)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/deps/polyhook/zydis/include)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/deps/polyhook/zydis/dependencies/zycore/include)
 

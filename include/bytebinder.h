@@ -24,3 +24,5 @@
 #include "mem.h"
 #include "pattern.h"
 #include "trampoline.h"
+
+namespace bb = bytebinder;
