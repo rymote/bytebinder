@@ -115,10 +115,11 @@ namespace bytebinder {
         [[nodiscard]] mem rip(int offset = 3) const;
 
         /**
-         * @brief Retrieves the value at the current memory address plus an optional offset.
+         * @brief Returns a typed pointer from a base address with an optional offset.
          *
-         * @param offset The offset to add to the current address for retrieving the value (default is 0).
-         * @return The value of type T at the specified address.
+         * @tparam T The type of pointer to return, defaults to `void*`.
+         * @param offset Byte offset to add to the base address, defaults to 0.
+         * @return Pointer of type T to the address calculated as `address + offset`.
          */
         template<class T = void *>
         T get(int offset = 0) {
