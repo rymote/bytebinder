@@ -1,0 +1,47 @@
+# Build directories
+/build/
+/build*/
+/cmake-build*/
+# CMake files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Compiled object files
+*.o
+*.obj
+
+# Static and dynamic libraries
+*.lib
+*.a
+*.dll
+*.so
+*.dylib
+
+# Executables
+*.exe
+*.out
+
+# Precompiled headers
+*.gch
+*.pch
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Editor-specific files
+.vscode/
+.idea/
+*.code-workspace
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Generated documentation
+docs/

@@ -1,0 +1,3 @@
+[submodule "deps/polyhook"]
+	path = deps/polyhook
+	url = git@github.com:stevemk14ebr/PolyHook_2_0.git
