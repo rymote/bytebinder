@@ -57,15 +57,15 @@ jobs:
           cp -r include package/include
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
             if [[ "${{ matrix.type }}" == "shared" ]]; then
-              cp build/${{ env.PROJECT_NAME }}.dll package/lib/bytebinder_${{ env.OS_NAME }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.dll
+              cp build/${{ matrix.build_type }}/${{ env.PROJECT_NAME }}.dll package/lib/bytebinder_${{ env.OS_NAME }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.dll
             else
-              cp build/${{ env.PROJECT_NAME }}.lib package/lib/bytebinder_${{ env.OS_NAME }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.lib
+              cp build/${{ matrix.build_type }}/${{ env.PROJECT_NAME }}.lib package/lib/bytebinder_${{ env.OS_NAME }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.lib
             fi
           else
             if [[ "${{ matrix.type }}" == "shared" ]]; then
-              cp build/lib${{ env.PROJECT_NAME }}.so package/lib/bytebinder_${{ env.OS_NAME }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.so
+              cp build/${{ matrix.build_type }}/${{ env.PROJECT_NAME }}.so package/lib/bytebinder_${{ env.OS_NAME }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.so
             else
-              cp build/lib${{ env.PROJECT_NAME }}.a package/lib/bytebinder_${{ env.OS_NAME }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.a
+              cp build/${{ matrix.build_type }}/${{ env.PROJECT_NAME }}.a package/lib/bytebinder_${{ env.OS_NAME }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.type }}.a
             fi
           fi
         shell: bash
