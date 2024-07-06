@@ -123,7 +123,7 @@ namespace bytebinder {
         template<class T = void *>
         T get(int offset = 0) {
             uintptr_t offsetted_address = address + offset;
-            return *reinterpret_cast<T*>(offsetted_address);
+            return (T)(offsetted_address);
         }
 
         /**
