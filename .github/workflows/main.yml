@@ -11,7 +11,7 @@ jobs:
       PROJECT_NAME: bytebinder
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [windows-latest]
         type: [static, shared]
         build_type: [Release, Debug]
     runs-on: ${{ matrix.os }}
@@ -20,7 +20,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
-          submodules: recursive
+          submodules: recursive  # Ensures all submodules are fetched
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -29,9 +29,19 @@ jobs:
 
       - name: Install CMake and Ninja
         run: pip install cmake ninja
+        if: matrix.os != 'windows-latest'
+
+      - name: Set up Visual Studio Environment
+        if: matrix.os == 'windows-latest'
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Configure CMake
-        run: cmake -B build -G "Ninja" -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DPOLYHOOK_BUILD_STATIC_RUNTIME=ON
+        run: |
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cmake -B build -G "Visual Studio 16 2019" -A x64 -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DPOLYHOOK_BUILD_STATIC_RUNTIME=ON
+          else
+            cmake -B build -G "Ninja" -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DPOLYHOOK_BUILD_STATIC_RUNTIME=ON
+        shell: bash
 
       - name: Build
         run: cmake --build build --config ${{ matrix.build_type }}
