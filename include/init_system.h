@@ -1,7 +1,7 @@
 /*
  * bytebinder - A C++ Library for Low-Level Memory Manipulation
  *
- * Authors: Péter Marton, Jovan Ivanovic
+ * Authors: PÃ©ter Marton, Jovan Ivanovic
  * License: MIT
  *
  * This file is part of bytebinder, a powerful tool for reading, writing, hooking, and manipulating memory addresses.
