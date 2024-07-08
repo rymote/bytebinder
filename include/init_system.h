@@ -18,6 +18,9 @@
 
 #pragma once
 
+#include "pch.h"
+#include "mem.h"
+
 namespace bytebinder {
     class mem_holder;
 

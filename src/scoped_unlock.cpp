@@ -19,18 +19,18 @@
 #include "scoped_unlock.h"
 
 namespace bytebinder {
-    scoped_unlock::scoped_unlock(uint64_t address, size_t length) : address(reinterpret_cast<void *>(address)),
-                                                                    length(length)
-#if defined(_WIN32)
-                                                                    , rights(0)
-#endif
-                                                                    {
-#if defined(_WIN32)
-        if (!VirtualProtect(reinterpret_cast<LPVOID>(address), length, PAGE_EXECUTE_READWRITE, &rights)) {
-            throw memory_operation_exception("Failed to change memory protection.", memory_error_code::PROTECTION_CHANGE_FAILED);
-        }
-#else
-        long pagesize = sysconf(_SC_PAGESIZE);
+    #if defined(_WIN32)
+        scoped_unlock::scoped_unlock(uint64_t address, size_t length) : address(reinterpret_cast<void *>(address)), length(length), rights(0) {
+    #else
+        scoped_unlock::scoped_unlock(uint64_t address, size_t length) : address(reinterpret_cast<void *>(address)), length(length) {
+    #endif
+
+        #if defined(_WIN32)
+            if (!VirtualProtect(reinterpret_cast<LPVOID>(address), length, PAGE_EXECUTE_READWRITE, &rights)) {
+                throw memory_operation_exception("Failed to change memory protection.", memory_error_code::PROTECTION_CHANGE_FAILED);
+            }
+        #else
+            long pagesize = sysconf(_SC_PAGESIZE);
             auto start = reinterpret_cast<uintptr_t>(this->address);
             uintptr_t end = start + this->length;
 
@@ -40,19 +40,19 @@ namespace bytebinder {
             if (mprotect(reinterpret_cast<void*>(start), this->length, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
                 throw memory_operation_exception("Failed to change memory protection.", memory_error_code::PROTECTION_CHANGE_FAILED);
             }
-#endif
+        #endif
     }
 
     scoped_unlock::~scoped_unlock() {
-#if defined(_WIN32)
-        DWORD temp;
-        if (!VirtualProtect(address, length, rights, &temp)) {
-            std::cerr << "Failed to restore original memory protection." << std::endl;
-        }
-#else
-        if (mprotect(address, length, PROT_READ) != 0) {
-            std::cerr << "Failed to restore original memory protection." << std::endl;
-        }
-#endif
+        #if defined(_WIN32)
+            DWORD temp;
+            if (!VirtualProtect(address, length, rights, &temp)) {
+                std::cerr << "Failed to restore original memory protection." << std::endl;
+            }
+        #else
+            if (mprotect(address, length, PROT_READ) != 0) {
+                std::cerr << "Failed to restore original memory protection." << std::endl;
+            }
+        #endif
     }
 }

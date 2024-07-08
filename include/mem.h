@@ -19,6 +19,7 @@
 #pragma once
 
 #include "pch.h"
+#include "macros.h"
 #include "memory_exceptions.h"
 #include "scoped_unlock.h"
 #include "pattern.h"
@@ -89,7 +90,25 @@ namespace bytebinder {
          */
         static void init_heap();
 
-        static void debug() {} // TODO
+        /**
+         * @brief Sets the debug mode for the mem class.
+         *
+         * This method allows enabling or disabling debug mode. When debug mode is enabled, additional debug information
+         * may be printed or certain debug-specific code may be executed in methods that use the MEM_DEBUG_EXEC macro.
+         *
+         * @param state Boolean value to set the debug mode. Pass true to enable debug mode, and false to disable it.
+         */
+        static void set_debug(bool state);
+
+        /**
+         * @brief Checks if the mem class is in debug mode.
+         *
+         * This method returns the current state of the debug mode. When debug mode is enabled, additional debug information
+         * may be printed or certain debug-specific code may be executed in methods that use the MEM_DEBUG_EXEC macro.
+         *
+         * @return Boolean value indicating whether debug mode is enabled (true) or disabled (false).
+         */
+        static bool is_debug();
 
         /**
          * @brief Checks if the current memory address is valid (i.e., not the maximum possible value for uintptr_t).
@@ -376,6 +395,7 @@ namespace bytebinder {
             return 0;
         }
 
+        static bool debug_mode;
         static std::vector<PLH::Detour*> detours;
     };
 }

@@ -52,10 +52,10 @@ namespace bytebinder {
         ~scoped_unlock();
 
     private:
-#if defined(_WIN32)
-        DWORD rights; ///< Stores the original memory protection rights to be restored.
-#endif
-        size_t length; ///< Length of the memory region.
-        void *address; ///< Memory address of the region.
+        #if defined(_WIN32)
+            DWORD rights; ///< Stores the original memory protection rights to be restored.
+        #endif
+            size_t length; ///< Length of the memory region.
+            void *address; ///< Memory address of the region.
     };
 }

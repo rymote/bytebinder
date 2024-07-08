@@ -22,40 +22,41 @@ namespace bytebinder {
     mem::mem(void* address) : address(reinterpret_cast<uintptr_t>(address)) {}
     mem::mem() : address(0) {}
 
+    bool mem::debug_mode = false;
     std::vector<PLH::Detour*> mem::detours;
     mem::_storage mem::storage;
     mem::_heap mem::heap;
 
     void mem::init(const char* module, uintptr_t _base, size_t _size) {
-    #if defined(_WIN32)
-        auto base = reinterpret_cast<uintptr_t>(GetModuleHandleA(module));
-        if (!base) {
-            throw memory_operation_exception("Failed to retrieve module handle.", memory_error_code::MODULE_INFO_RETRIEVAL_FAILED);
-        }
+        #if defined(_WIN32)
+            auto base = reinterpret_cast<uintptr_t>(GetModuleHandleA(module));
+            if (!base) {
+                throw memory_operation_exception("Failed to retrieve module handle.", memory_error_code::MODULE_INFO_RETRIEVAL_FAILED);
+            }
 
-        MODULEINFO info = {nullptr};
-        if (!GetModuleInformation(GetCurrentProcess(), reinterpret_cast<HMODULE>(base), &info, sizeof(MODULEINFO))) {
-            throw memory_operation_exception("Couldn't get ModuleInformation", memory_error_code::MODULE_INFO_RETRIEVAL_FAILED);
-        }
+            MODULEINFO info = {nullptr};
+            if (!GetModuleInformation(GetCurrentProcess(), reinterpret_cast<HMODULE>(base), &info, sizeof(MODULEINFO))) {
+                throw memory_operation_exception("Couldn't get ModuleInformation", memory_error_code::MODULE_INFO_RETRIEVAL_FAILED);
+            }
 
-        mem::storage.base = _base ? _base : base;
-        mem::storage.size = _size ? _size : info.SizeOfImage;
-    #else
-        Dl_info dl_info;
-        void* handle = dlopen(module, RTLD_LAZY);
-        if (!handle) {
-            throw memory_operation_exception("Failed to open module.", memory_error_code::MODULE_INFO_RETRIEVAL_FAILED);
-        }
+            mem::storage.base = _base ? _base : base;
+            mem::storage.size = _size ? _size : info.SizeOfImage;
+        #else
+            Dl_info dl_info;
+            void* handle = dlopen(module, RTLD_LAZY);
+            if (!handle) {
+                throw memory_operation_exception("Failed to open module.", memory_error_code::MODULE_INFO_RETRIEVAL_FAILED);
+            }
 
-        if (!dladdr(reinterpret_cast<void*>(init), &dl_info)) {
+            if (!dladdr(reinterpret_cast<void*>(init), &dl_info)) {
+                dlclose(handle);
+                throw memory_operation_exception("Failed to retrieve module address.", memory_error_code::MODULE_INFO_RETRIEVAL_FAILED);
+            }
+
+            mem::storage.base = reinterpret_cast<uintptr_t>(dl_info.dli_fbase);
+            mem::storage.size = 0;
             dlclose(handle);
-            throw memory_operation_exception("Failed to retrieve module address.", memory_error_code::MODULE_INFO_RETRIEVAL_FAILED);
-        }
-
-        mem::storage.base = reinterpret_cast<uintptr_t>(dl_info.dli_fbase);
-        mem::storage.size = 0;
-        dlclose(handle);
-    #endif
+        #endif
 
         try {
             init_heap();
@@ -67,17 +68,25 @@ namespace bytebinder {
 
     void mem::init_heap() {
         mem::heap.size = 1024 * 1024;
-    #if defined(_WIN32)
-        mem::heap.data = reinterpret_cast<uintptr_t>(VirtualAlloc(nullptr, mem::heap.size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
-        if (mem::heap.data == 0) {
-            throw memory_operation_exception("Failed to allocate heap memory.", memory_error_code::ALLOCATION_FAILED);
-        }
-    #else
-        mem::heap.data = reinterpret_cast<uintptr_t>(mmap(nullptr, mem::heap.size, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANON, -1, 0));
+        #if defined(_WIN32)
+            mem::heap.data = reinterpret_cast<uintptr_t>(VirtualAlloc(nullptr, mem::heap.size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+            if (mem::heap.data == 0) {
+                throw memory_operation_exception("Failed to allocate heap memory.", memory_error_code::ALLOCATION_FAILED);
+            }
+        #else
+            mem::heap.data = reinterpret_cast<uintptr_t>(mmap(nullptr, mem::heap.size, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANON, -1, 0));
             if (mem::heap.data == reinterpret_cast<uintptr_t>(MAP_FAILED)) {
                 throw memory_operation_exception("Failed to allocate heap memory.", memory_error_code::ALLOCATION_FAILED);
             }
-    #endif
+        #endif
+    }
+
+    void mem::set_debug(bool state) {
+        debug_mode = state;
+    }
+
+    bool mem::is_debug() {
+        return debug_mode;
     }
 
     bool mem::valid() const {

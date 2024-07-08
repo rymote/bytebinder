@@ -16,8 +16,6 @@
  * of, or in connection with the software or the use or other dealings in the software.
  */
 
-#pragma once
-
 #include "memory_exceptions.h"
 
 namespace bytebinder {
