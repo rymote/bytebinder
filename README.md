@@ -1,5 +1,5 @@
 <div align="center">
-    <a href="https://github.com/rymote/bytebinder"><img src="https://github.com/rymote/bytebinder/assets/10540277/4fd6247f-d54c-44ce-9e3c-3ebea5ff8807" alt="rymote/bytebinder" /></a>
+    <a href="https://github.com/rymote/bytebinder"><img src="https://github.com/rymote/bytebinder/blob/master/.github/rymote-bytebinder-cover.png" alt="rymote/bytebinder" /></a>
 </div>
 <br />
 
