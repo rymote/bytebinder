@@ -295,7 +295,11 @@ namespace bytebinder {
                     }
                 }
             } catch (const std::invalid_argument& e) {
-                throw memory_operation_exception(std::string("Error parsing pattern: ") + e.what(), memory_error_code::PATTERN_MATCH_FAILED);
+                if (is_debug()) {
+                    std::cerr << "[bytebinder] " << "Corrupt pattern: " << ida_pattern << std::endl;
+                } else {
+                    throw memory_operation_exception(std::string("Error parsing pattern: ") + e.what(),memory_error_code::PATTERN_MATCH_FAILED);
+                }
             }
 
             signature[size] = 0;
@@ -303,7 +307,11 @@ namespace bytebinder {
 
             mem found(pattern(signature, mask, size).scan());
             if (found.address == std::numeric_limits<uintptr_t>::max()) {
-                throw memory_operation_exception("Pattern not found in memory.", memory_error_code::PATTERN_MATCH_FAILED);
+                if (is_debug()) {
+                    std::cerr << "[bytebinder] " << "Memory pattern not found: " << ida_pattern << std::endl;
+                } else {
+                    throw memory_operation_exception("Pattern not found in memory.",memory_error_code::PATTERN_MATCH_FAILED);
+                }
             }
 
             return found;

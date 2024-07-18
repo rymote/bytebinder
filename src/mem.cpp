@@ -104,30 +104,41 @@ namespace bytebinder {
     }
 
     void mem::nop(size_t size) const {
-        scoped_unlock lock(address, size);
-        memset(reinterpret_cast<void*>(address), 0x90, size);
+        if (!is_debug()) {
+            scoped_unlock lock(address, size);
+            memset(reinterpret_cast<void *>(address), 0x90, size);
+        }
     }
 
     void mem::ret() {
-        set<uint8_t>(0xC3);
+        if (!is_debug()) {
+            set<uint8_t>(0xC3);
+        }
     }
 
     mem mem::jmp(uintptr_t function) {
-        set<uint8_t>(0x48);
-        add(1).set<uint8_t>(0xB8);
-        add(2).set<uintptr_t>(function);
-        add(10).set<uint8_t>(0xFF);
-        add(11).set<uint8_t>(0xE0);
+        if (!is_debug()) {
+            set<uint8_t>(0x48);
+            add(1).set<uint8_t>(0xB8);
+            add(2).set<uintptr_t>(function);
+            add(10).set<uint8_t>(0xFF);
+            add(11).set<uint8_t>(0xE0);
+        }
+
         return (*this);
     }
 
     void mem::call(uintptr_t function) {
-        set<uint8_t>(0xE8);
-        add(1).set(int32_t(function - address - 5));
+        if (!is_debug()) {
+            set<uint8_t>(0xE8);
+            add(1).set(int32_t(function - address - 5));
+        }
     }
 
     void mem::set_call(void* target) {
-        call(alloc(12).jmp(reinterpret_cast<uintptr_t>(target)).get<uintptr_t>());
+        if (!is_debug()) {
+            call(alloc(12).jmp(reinterpret_cast<uintptr_t>(target)).get<uintptr_t>());
+        }
     }
 
     bool mem::compare(const void* buffer, size_t size) const {

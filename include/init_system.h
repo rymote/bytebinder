@@ -25,9 +25,9 @@ namespace bytebinder {
     class mem_holder;
 
     using mem_initializer_t = std::function<mem()>;
-    using fn_initializer_t = std::function<void()>;
+    using function_initializer_t = std::function<void()>;
     inline std::unordered_map<mem_holder*, mem_initializer_t> mem_initializers;
-    inline std::vector<fn_initializer_t> fn_initializers;
+    inline std::vector<function_initializer_t> function_initializers;
 
     class mem_holder {
     public:
@@ -48,8 +48,8 @@ namespace bytebinder {
     template<typename T>
     class static_mem : public mem_holder {
     public:
-        static_mem(const mem_initializer_t& fn) : mem_holder() {
-            mem_initializers[this] = fn;
+        static_mem(const mem_initializer_t& function) : mem_holder() {
+            mem_initializers[this] = function;
         }
 
         T operator->() {
@@ -60,8 +60,8 @@ namespace bytebinder {
     template<typename R, typename... Args>
     class static_func : public mem_holder {
     public:
-        static_func(const mem_initializer_t& fn) : mem_holder() {
-            mem_initializers[this] = fn;
+        static_func(const mem_initializer_t& function) : mem_holder() {
+            mem_initializers[this] = function;
         }
 
         R operator()(Args... args) {
@@ -71,41 +71,41 @@ namespace bytebinder {
 
     class init_func {
     public:
-        init_func(const fn_initializer_t& fn) {
-            fn_initializers.push_back(fn);
+        init_func(const function_initializer_t& function) {
+            function_initializers.push_back(function);
         }
     };
 
     template<typename R, typename... Args>
     class static_hook {
-        using fn_t = R(__fastcall*)(Args...);
-        fn_t hook_func;
-        fn_t orig_func;
+        using function_t = R(__fastcall*)(Args...);
+        function_t hook_function;
+        function_t original_function;
 
     public:
         template<std::size_t S>
         constexpr static_hook(const char(&ida_pattern)[S]) {
             static init_func _([this, ida_pattern]() {
-                mem::scan(ida_pattern).get<fn_t>().hook(hook_func, &orig_func);
+                mem::scan(ida_pattern).get<function_t>().hook(hook_function, &original_function);
             });
         }
 
-        static_hook(const static_mem<fn_t>& target) {
+        static_hook(const static_mem<function_t>& target) {
             static init_func _([this, target] {
-                target.get_target().hook(hook_func, &orig_func);
+                target.get_target().hook(hook_function, &original_function);
             });
         }
 
-        fn_t get_hook() {
-            return hook_func;
+        function_t get_hook() {
+            return hook_function;
         }
 
-        fn_t get_orig() {
-            return hook_func;
+        function_t get_orig() {
+            return original_function;
         }
 
         R operator()(Args...args) const {
-            return orig_func(args...);
+            return original_function(args...);
         }
     };
 
@@ -114,7 +114,7 @@ namespace bytebinder {
             holder->set_target(fn());
         }
 
-        for (auto& init : fn_initializers) {
+        for (auto& init : function_initializers) {
             init();
         }
     }
