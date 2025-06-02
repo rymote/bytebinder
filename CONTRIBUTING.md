@@ -19,7 +19,7 @@ If you find a bug, please report it by opening an issue on our GitHub repository
 
 ### Coding Standards
 
-Please adhere to the coding standards used throughout the project. This includes proper indentation, comments, and using [language]-specific best practices.
+Please adhere to the coding standards used throughout the project. This includes proper indentation, comments, and using C++ specific best practices.
 
 ### Testing
 
