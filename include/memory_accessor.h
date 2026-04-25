@@ -9,6 +9,11 @@
 
 #include "pch.h"
 
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
 namespace bytebinder {
     /**
      * @brief POSIX-style protection bits used as a portable currency between

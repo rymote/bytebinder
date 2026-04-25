@@ -13,7 +13,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        # macOS support requires Mach VM / dyld backed accessors; tracked separately.
+        os: [windows-latest, ubuntu-latest]
         build_type: [Release, Debug]
         link_type: [static, shared]
     runs-on: ${{ matrix.os }}

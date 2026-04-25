@@ -454,10 +454,28 @@ TEST_CASE("Out-of-process: ptrace freeze handles multi-threaded targets", "[mem]
 }
 
 TEST_CASE("Out-of-process: remote_accessor reads, writes, and scans a child", "[mem][remote][fork]") {
-    constexpr uint8_t signature_bytes[16] = {
-        0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE,
-        0x13, 0x37, 0x42, 0x00, 0xAA, 0xBB, 0xCC, 0xDD
-    };
+    // Make the signature opaque to the optimizer: XOR each byte against a
+    // volatile zero so -O3 can't fold the writes into a contiguous .rodata
+    // blob that the scanner would match before reaching the runtime buffer.
+    volatile uint8_t opaque_zero = 0;
+    uint8_t signature_bytes[16];
+    signature_bytes[0]  = static_cast<uint8_t>(0xDE ^ opaque_zero);
+    signature_bytes[1]  = static_cast<uint8_t>(0xAD ^ opaque_zero);
+    signature_bytes[2]  = static_cast<uint8_t>(0xBE ^ opaque_zero);
+    signature_bytes[3]  = static_cast<uint8_t>(0xEF ^ opaque_zero);
+    signature_bytes[4]  = static_cast<uint8_t>(0xCA ^ opaque_zero);
+    signature_bytes[5]  = static_cast<uint8_t>(0xFE ^ opaque_zero);
+    signature_bytes[6]  = static_cast<uint8_t>(0xBA ^ opaque_zero);
+    signature_bytes[7]  = static_cast<uint8_t>(0xBE ^ opaque_zero);
+    signature_bytes[8]  = static_cast<uint8_t>(0x13 ^ opaque_zero);
+    signature_bytes[9]  = static_cast<uint8_t>(0x37 ^ opaque_zero);
+    signature_bytes[10] = static_cast<uint8_t>(0x42 ^ opaque_zero);
+    signature_bytes[11] = static_cast<uint8_t>(0x00 ^ opaque_zero);
+    signature_bytes[12] = static_cast<uint8_t>(0xAA ^ opaque_zero);
+    signature_bytes[13] = static_cast<uint8_t>(0xBB ^ opaque_zero);
+    signature_bytes[14] = static_cast<uint8_t>(0xCC ^ opaque_zero);
+    signature_bytes[15] = static_cast<uint8_t>(0xDD ^ opaque_zero);
+
     constexpr uint32_t initial_marker = 0x12345678;
     constexpr uint32_t replacement_marker = 0xCAFEBEEF;
 

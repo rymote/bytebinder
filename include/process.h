@@ -9,6 +9,11 @@
 
 #include "memory_accessor.h"
 
+#include <memory>
+#include <optional>
+#include <string_view>
+#include <vector>
+
 namespace bytebinder {
     class mem;
 
