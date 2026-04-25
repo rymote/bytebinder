@@ -1,7 +1,7 @@
 #define CATCH_CONFIG_MAIN
 #include <catch2/catch_test_macros.hpp>
 #include "bytebinder.h"
-#include "process.h"
+#include "bb_process.h"
 
 #if !defined(_WIN32)
     #include <sys/wait.h>

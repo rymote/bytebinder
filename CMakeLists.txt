@@ -56,7 +56,7 @@ set(BYTEBINDER_PUBLIC_HEADERS
     include/memory_exceptions.h
     include/pattern.h
     include/pch.h
-    include/process.h
+    include/bb_process.h
     include/remote_accessor.h
     include/scoped_unlock.h
 )

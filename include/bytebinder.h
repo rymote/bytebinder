@@ -27,6 +27,6 @@
 #include "memory_accessor.h"
 #include "local_accessor.h"
 #include "remote_accessor.h"
-#include "process.h"
+#include "bb_process.h"
 
 namespace bb = bytebinder;
