@@ -28,7 +28,7 @@ namespace bytebinder {
      * This class is a RAII (Resource Acquisition Is Initialization) style guard that changes the memory
      * protection rights of a specified memory region upon construction, and restores them upon destruction.
      */
-    class scoped_unlock {
+    class BYTEBINDER_API scoped_unlock {
     public:
         /**
          * @brief Constructs the scoped_unlock object and changes the memory protection rights of a region.
@@ -53,9 +53,11 @@ namespace bytebinder {
 
     private:
         #if defined(_WIN32)
-            DWORD rights; ///< Stores the original memory protection rights to be restored.
+            DWORD original_protection; ///< Stores the original memory protection rights to be restored.
+        #else
+            int original_protection; ///< POSIX protection flags captured at construction.
         #endif
-            size_t length; ///< Length of the memory region.
-            void *address; ///< Memory address of the region.
+            size_t length; ///< Length of the memory region (page-aligned on POSIX).
+            void *address; ///< Memory address of the region (page-aligned on POSIX).
     };
 }

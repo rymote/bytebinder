@@ -3,17 +3,6 @@
  *
  * Authors: Péter Marton, Jovan Ivanovic
  * License: MIT
- *
- * This file is part of bytebinder, a powerful tool for reading, writing, hooking, and manipulating memory addresses.
- *
- * Repository: https://github.com/rymote/bytebinder
- *
- * For issues, suggestions, or contributions, please visit the repository or contact the authors.
- *
- * This software is provided "as is", without warranty of any kind, express or implied, including but not limited to the warranties
- * of merchantability, fitness for a particular purpose, and noninfringement. In no event shall the authors or copyright holders
- * be liable for any claim, damages, or other liability, whether in an action of contract, tort, or otherwise, arising from, out
- * of, or in connection with the software or the use or other dealings in the software.
  */
 
 #pragma once
@@ -26,96 +15,103 @@ namespace bytebinder {
 
     using mem_initializer_t = std::function<mem()>;
     using function_initializer_t = std::function<void()>;
-    inline std::unordered_map<mem_holder*, mem_initializer_t> mem_initializers;
-    inline std::vector<function_initializer_t> function_initializers;
+
+    inline std::unordered_map<mem_holder*, mem_initializer_t>& mem_initializers() {
+        static std::unordered_map<mem_holder*, mem_initializer_t> instance;
+        return instance;
+    }
+
+    inline std::vector<function_initializer_t>& function_initializers() {
+        static std::vector<function_initializer_t> instance;
+        return instance;
+    }
 
     class mem_holder {
     public:
-        mem_holder() : target(nullptr) {}
+        mem_holder() : target() {}
 
-        void set_target(const mem& _target) {
-            target = _target;
-        }
-
-        mem get_target() {
-            return target;
-        }
+        void set_target(const mem& new_target) { target = new_target; }
+        mem get_target() const { return target; }
 
     protected:
         mem target;
     };
 
-    template<typename T>
+    template<typename PointerType>
     class static_mem : public mem_holder {
     public:
-        static_mem(const mem_initializer_t& function) : mem_holder() {
-            mem_initializers[this] = function;
+        explicit static_mem(const mem_initializer_t& initializer) : mem_holder() {
+            mem_initializers()[this] = initializer;
         }
 
-        T operator->() {
-            return target.get<T>();
+        PointerType operator->() {
+            return target.get<PointerType>();
         }
     };
 
-    template<typename R, typename... Args>
+    template<typename FunctionPointer>
     class static_func : public mem_holder {
     public:
-        static_func(const mem_initializer_t& function) : mem_holder() {
-            mem_initializers[this] = function;
+        explicit static_func(const mem_initializer_t& initializer) : mem_holder() {
+            mem_initializers()[this] = initializer;
         }
 
-        R operator()(Args... args) {
-            return target.get<R(*)(Args...)>()(args...);
+        template<typename... Args>
+        auto operator()(Args... args) -> decltype(target.get<FunctionPointer>()(args...)) {
+            return target.get<FunctionPointer>()(args...);
         }
     };
 
     class init_func {
     public:
-        init_func(const function_initializer_t& function) {
-            function_initializers.push_back(function);
+        explicit init_func(const function_initializer_t& initializer) {
+            function_initializers().push_back(initializer);
         }
     };
 
-    template<typename R, typename... Args>
+    template<typename ReturnType, typename... Args>
     class static_hook {
-        using function_t = R(__fastcall*)(Args...);
-        function_t hook_function;
-        function_t original_function;
-
     public:
-        template<std::size_t S>
-        constexpr static_hook(const char(&ida_pattern)[S]) {
-            static init_func _([this, ida_pattern]() {
-                mem::scan(ida_pattern).get<function_t>().hook(hook_function, &original_function);
+        using function_t = ReturnType(*)(Args...);
+
+        template<std::size_t PatternSize>
+        static_hook(const char(&ida_pattern)[PatternSize], function_t detour)
+            : detour_function(detour) {
+            function_initializers().push_back([this, ida_pattern]() {
+                this->handle = mem::scan(ida_pattern)
+                    .template get<function_t>()
+                    .hook(detour_function, &original_function);
             });
         }
 
-        static_hook(const static_mem<function_t>& target) {
-            static init_func _([this, target] {
-                target.get_target().hook(hook_function, &original_function);
+        static_hook(static_mem<function_t>& target_mem, function_t detour)
+            : detour_function(detour) {
+            function_initializers().push_back([this, &target_mem]() {
+                this->handle = target_mem.get_target()
+                    .hook(detour_function, &original_function);
             });
         }
 
-        function_t get_hook() {
-            return hook_function;
-        }
+        [[nodiscard]] function_t detour() const noexcept { return detour_function; }
+        [[nodiscard]] function_t original() const noexcept { return original_function; }
+        [[nodiscard]] hook_handle& handle_ref() noexcept { return handle; }
 
-        function_t get_orig() {
-            return original_function;
-        }
-
-        R operator()(Args...args) const {
+        ReturnType operator()(Args... args) const {
             return original_function(args...);
         }
+
+    private:
+        function_t detour_function = nullptr;
+        function_t original_function = nullptr;
+        hook_handle handle;
     };
 
     inline void run_init_funcs() {
-        for (auto& [holder, fn] : mem_initializers) {
-            holder->set_target(fn());
+        for (auto& [holder, initializer] : mem_initializers()) {
+            holder->set_target(initializer());
         }
-
-        for (auto& init : function_initializers) {
-            init();
+        for (auto& initializer : function_initializers()) {
+            initializer();
         }
     }
 }

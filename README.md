@@ -59,18 +59,182 @@
 
 ## Installation
 
-```cpp
-// TODO
+> **Note**: Function detours rely on PolyHook 2.0 and require a function with
+> enough bytes to safely overwrite the prologue (typically ≥ 14 bytes on x64).
+> Hooking very small leaf functions may fail with `Function too small to hook`.
+
+### Prerequisites
+
+- CMake **3.28+**
+- A C++20-capable compiler (MSVC 19.30+, GCC 12+, Clang 15+)
+- Git (the build pulls in PolyHook 2.0 as a submodule)
+
+### Build from source
+
+```sh
+git clone --recurse-submodules https://github.com/rymote/bytebinder.git
+cd bytebinder
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+```
+
+The build produces `bytebinder` static + shared libraries under `build/lib/`.
+The Catch2 test runner builds as `bytebinder_tests`; run with
+`ctest --test-dir build`.
+
+### Build options
+
+| Option | Default | Description |
+|---|---|---|
+| `BYTEBINDER_BUILD_STATIC` | `ON` | Build the static archive target. |
+| `BYTEBINDER_BUILD_SHARED` | `ON` | Build the shared library target. |
+| `BYTEBINDER_BUILD_TESTS` | `ON` (top-level) | Build the Catch2 test runner. |
+| `BYTEBINDER_ENABLE_SANITIZERS` | `OFF` | Compile with AddressSanitizer + UBSan in Debug. |
+
+### Consume from another CMake project
+
+```cmake
+find_package(bytebinder CONFIG REQUIRED)
+target_link_libraries(my_target PRIVATE bytebinder::shared)  # or bytebinder::static
 ```
 
 ## Usage
 
 ```cpp
-// TODO
+#include <bytebinder/bytebinder.h>
+
+int main() {
+    // Bind to the current process's main module. On Windows this calls
+    // GetModuleHandleA(nullptr); on Linux it walks dl_iterate_phdr.
+    bb::mem::init();
+
+    // Find a function by signature (IDA-style; '?' is a wildcard nibble).
+    bb::mem target = bb::mem::scan("48 89 5C 24 ? 48 89 74 24 ? 57 48 83 EC 20");
+
+    using fn_t = int(*)(int);
+    fn_t original = nullptr;
+    auto handle = target.hook<fn_t>([](int value) {
+        return original(value) + 1;
+    }, &original);
+
+    // ... do work ...
+
+    handle.unhook();        // remove this hook
+    bb::mem::unhook_all();  // or remove every hook installed via bytebinder
+}
+```
+
+### Watching for memory changes
+
+```cpp
+auto watch = bb::mem(some_address).watch(
+    sizeof(int),
+    []{ std::cout << "value changed!\n"; },
+    std::chrono::milliseconds{50});
+
+// keep `watch` alive for as long as you want callbacks; its destructor stops
+// the worker thread cleanly. Call `watch.stop()` to cancel earlier.
+```
+
+### Out-of-process: attach to another PID
+
+```cpp
+#include <bytebinder/bytebinder.h>
+
+int main(int argc, char** argv) {
+    auto target = bb::process::attach(std::stoul(argv[1]));
+
+    for (auto& loaded : target.modules()) {
+        std::printf("%-40s 0x%lx (%zu bytes)\n",
+                    loaded.name.c_str(), loaded.base, loaded.size);
+    }
+
+    bb::mem hit = target.scan("DE AD BE EF ?? ?? CA FE", "libgame.so");
+    if (hit.valid()) {
+        const auto first_eight = hit.read_bytes(8);
+        const uint32_t marker  = hit.read<uint32_t>(/*offset=*/16);
+        // mutate it
+        target.at(hit.address + 16).write<uint32_t>(0xCAFEBEEF);
+    }
+}
+```
+
+Backed by `Read/WriteProcessMemory` + `VirtualQueryEx` on Windows and
+`process_vm_readv/writev` + `/proc/<pid>/maps` on Linux.
+
+**What's local-only**: `mem::hook<T>`, `mem::set_call`, `mem::assemble`,
+`mem::alloc`, and `mem::alloc_near` operate on the calling process and throw
+`memory_operation_exception(INVALID_OPERATION)` if invoked through a
+remote-bound `mem`. Use `mem::read<T>` / `mem::read_bytes` /
+`mem::write<T>` / `mem::write_bytes` for cross-process I/O — they go through
+the bound accessor and work for both local and remote.
+
+**Linux note**: `remote_accessor::set_protection` is implemented via
+`ptrace` + an injected `mprotect` syscall on **x86_64**, **aarch64**, and
+**32-bit ARM** (both ARM and Thumb modes). The flow:
+
+1. Walk `/proc/<pid>/task/` and `PTRACE_ATTACH` every thread, retrying until
+   no new TIDs appear (handles thread creation racing the freeze).
+2. On the leader thread: save the GPR set + 8 bytes at the program counter,
+   overlay the architecture's syscall instruction (`0F 05` x86_64,
+   `D4 00 00 01` aarch64, `EF 00 00 00` ARM, `DF 00` Thumb), set the syscall
+   args (`rax/rdi/rsi/rdx`, `x8/x0/x1/x2`, or `r7/r0/r1/r2`),
+   `PTRACE_SINGLESTEP`, read the result.
+3. Restore bytes + registers and `PTRACE_DETACH` every thread.
+
+The target must be `ptrace`-attachable: a parent always qualifies; otherwise
+`yama.ptrace_scope` and `CAP_SYS_PTRACE` apply. The x86_64 + multi-thread
+path is exercised end-to-end in CI; aarch64 and arm paths are
+syntax-checked under cross-compilers (`crossbuild-essential-arm64`,
+`crossbuild-essential-armhf`) and need real hardware or a QEMU runner for
+live verification. Reads, writes, region enumeration, and scanning never
+need ptrace.
+
+### Declarative pattern-bound hooks
+
+```cpp
+static int my_detour(int value);
+static bb::static_hook<int, int> patched_func("E8 ? ? ? ? 8B C8", my_detour);
+
+int main() {
+    bb::mem::init();
+    bb::run_init_funcs();   // resolves and installs every static_* registration
+    return patched_func(42);
+}
 ```
 
 ## Reference
 
-```cpp
-// TODO
-```
+The full API is documented inline in `include/`. Briefly:
+
+- `bb::process` — handle to the current process or a remote PID
+  (`process::current()`, `process::attach(pid)`). Owns a `memory_accessor`,
+  enumerates modules and regions, and exposes `at(address)` plus a
+  process-aware `scan(pattern, optional<module>)`.
+- `bb::memory_accessor` — abstract read/write/protection/region/module
+  surface. Implementations: `bb::local_accessor` (in-process direct
+  dereference) and `bb::remote_accessor` (`Read/WriteProcessMemory` or
+  `process_vm_readv/writev`).
+- `bb::mem` — fluent wrapper over a `uintptr_t` and a bound accessor.
+  Offset math (`add`, `rip`); typed accessor-aware I/O (`read<T>`, `write<T>`,
+  `read_bytes`, `write_bytes`); local-only pointer view (`get<T>`); patch
+  primitives (`nop`, `ret`, `jmp`, `call`, `set_call`, `hook<T>` — all
+  local-only); search (`compare`, `find`); allocation (`alloc`, `alloc_near`,
+  `make_executable` — local-only); code generation (`assemble` — local-only);
+  observability (`dump`, `watch`).
+- `bb::scoped_unlock` — RAII page-protection flip; restores the original
+  permissions on destruction.
+- `bb::pattern` — IDA-style signature matcher. Used by `mem::scan`.
+- `bb::hook_handle` / `bb::watch_handle` — RAII cancellation handles.
+- `bb::static_mem<T>`, `bb::static_func<R, Args...>`, `bb::static_hook<R, Args...>`,
+  `bb::init_func` — declarative registration; `bb::run_init_funcs()` flushes
+  the queue.
+- `bb::memory_operation_exception` / `bb::memory_error_code` — thrown by every
+  primitive on failure; carries a typed error code.
+
+### Dry-run mode
+
+`bb::mem::set_dry_run(true)` causes the patch primitives (`nop`, `ret`, `jmp`,
+`call`, `set_call`) to skip their writes. Useful for unit-testing call sites
+without mutating real code. (The legacy aliases `set_debug` / `is_debug` are
+deprecated.)

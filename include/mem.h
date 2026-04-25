@@ -23,6 +23,7 @@
 #include "memory_exceptions.h"
 #include "scoped_unlock.h"
 #include "pattern.h"
+#include "local_accessor.h"
 
 #include <asmjit/core/jitruntime.h>
 #include <asmjit/x86/x86assembler.h>
@@ -33,6 +34,64 @@
 using namespace asmjit::x86;
 
 namespace bytebinder {
+    class mem;
+
+    class BYTEBINDER_API hook_handle {
+    public:
+        hook_handle() = default;
+        [[nodiscard]] bool installed() const noexcept { return detour_pointer != nullptr; }
+        bool unhook();
+
+    private:
+        explicit hook_handle(PLH::Detour* detour) : detour_pointer(detour) {}
+        PLH::Detour* detour_pointer = nullptr;
+        friend class mem;
+    };
+
+    class BYTEBINDER_API watch_handle {
+    public:
+        watch_handle() = default;
+        watch_handle(std::shared_ptr<std::atomic_bool> stop_flag,
+                     std::thread worker_thread)
+            : stop_flag(std::move(stop_flag)),
+              worker_thread(std::move(worker_thread)) {}
+
+        watch_handle(const watch_handle&) = delete;
+        watch_handle& operator=(const watch_handle&) = delete;
+
+        watch_handle(watch_handle&& other) noexcept
+            : stop_flag(std::move(other.stop_flag)),
+              worker_thread(std::move(other.worker_thread)) {}
+
+        watch_handle& operator=(watch_handle&& other) noexcept {
+            if (this != &other) {
+                stop();
+                stop_flag = std::move(other.stop_flag);
+                worker_thread = std::move(other.worker_thread);
+            }
+            return *this;
+        }
+
+        ~watch_handle() { stop(); }
+
+        void stop() noexcept {
+            if (stop_flag) {
+                stop_flag->store(true);
+            }
+            if (worker_thread.joinable()) {
+                worker_thread.join();
+            }
+        }
+
+        [[nodiscard]] bool active() const noexcept {
+            return stop_flag && !stop_flag->load();
+        }
+
+    private:
+        std::shared_ptr<std::atomic_bool> stop_flag;
+        std::thread worker_thread;
+    };
+
     /**
      * @brief Class that facilitates direct memory manipulation and management.
      *
@@ -40,31 +99,21 @@ namespace bytebinder {
      * hooking, and pattern scanning in a target process's memory space. It provides utilities
      * to modify memory safely with features like locking mechanisms and direct memory access.
      */
-    class mem {
+    class BYTEBINDER_API mem {
         friend class pattern; // Allows the pattern class to access private and protected members of mem.
 
     public:
-        uintptr_t address; ///< Holds the memory address that this object represents.
+        uintptr_t address; ///< Holds the memory address this object represents.
+        memory_accessor* accessor; ///< Backing memory access strategy; never null.
 
-        /**
-         * @brief Constructs an instance representing the memory at a specific address.
-         *
-         * @param address Memory address as a uintptr_t.
-         */
-        //explicit mem(uintptr_t address);
-        constexpr mem(uintptr_t address): address(address) {}
+        constexpr mem(uintptr_t address, memory_accessor* accessor)
+            : address(address), accessor(accessor) {}
 
-        /**
-         * @brief Constructs an instance from a void pointer by converting it to an uintptr_t address.
-         *
-         * @param address Memory address as a void pointer.
-         */
-        explicit mem(void *address);
-
-        /**
-         * @brief Default constructor initializing the memory address to zero.
-         */
+        mem(uintptr_t address);
+        explicit mem(void* address);
         explicit mem();
+
+        [[nodiscard]] bool is_local() const noexcept { return accessor && accessor->is_local(); }
 
         /**
          * @brief Initializes the memory manipulation environment, including hooking and base address determination.
@@ -91,24 +140,22 @@ namespace bytebinder {
         static void init_heap();
 
         /**
-         * @brief Sets the debug mode for the mem class.
-         *
-         * This method allows enabling or disabling debug mode. When debug mode is enabled, additional debug information
-         * may be printed or certain debug-specific code may be executed in methods that use the MEM_DEBUG_EXEC macro.
-         *
-         * @param state Boolean value to set the debug mode. Pass true to enable debug mode, and false to disable it.
+         * @brief Toggles dry-run mode. When enabled, write-style methods (nop, ret, jmp,
+         *        call, set_call) become no-ops while still validating their arguments.
+         *        Useful for unit-testing call sites without actually mutating memory.
          */
-        static void set_debug(bool state);
+        static void set_dry_run(bool state);
 
         /**
-         * @brief Checks if the mem class is in debug mode.
-         *
-         * This method returns the current state of the debug mode. When debug mode is enabled, additional debug information
-         * may be printed or certain debug-specific code may be executed in methods that use the MEM_DEBUG_EXEC macro.
-         *
-         * @return Boolean value indicating whether debug mode is enabled (true) or disabled (false).
+         * @brief Returns the current dry-run mode state.
          */
-        static bool is_debug();
+        [[nodiscard]] static bool is_dry_run();
+
+        [[deprecated("Use set_dry_run; the old name is misleading.")]]
+        static void set_debug(bool state) { set_dry_run(state); }
+
+        [[deprecated("Use is_dry_run; the old name is misleading.")]]
+        [[nodiscard]] static bool is_debug() { return is_dry_run(); }
 
         /**
          * @brief Checks if the current memory address is valid (i.e., not the maximum possible value for uintptr_t).
@@ -140,21 +187,79 @@ namespace bytebinder {
          * @param offset Byte offset to add to the base address, defaults to 0.
          * @return Pointer of type T to the address calculated as `address + offset`.
          */
+        /**
+         * @brief Returns a typed pointer at address+offset. **Local accessor only**;
+         *        a remote accessor's bytes do not live in this process and the
+         *        returned pointer would be unsafe to dereference.
+         */
         template<class T = void *>
         T get(int offset = 0) {
+            if (!is_local()) {
+                throw memory_operation_exception(
+                    "mem::get<T> requires a local accessor; use mem::read<T> for remote.",
+                    memory_error_code::INVALID_OPERATION);
+            }
             uintptr_t offsetted_address = address + offset;
             return (T)(offsetted_address);
         }
 
         /**
-         * @brief Sets a value at the current memory address.
-         *
-         * @param value The value to set at the current memory address.
+         * @brief Reads a T-sized value at address+offset via the bound accessor.
+         *        Works for both local and remote.
          */
         template<typename T>
-        void set(const T &value) {
-            scoped_unlock lock(address, sizeof(T));
-            memcpy(reinterpret_cast<void*>(address), &value, sizeof(T));
+        [[nodiscard]] T read(int offset = 0) const {
+            T value{};
+            if (accessor->read(address + offset, &value, sizeof(T)) != sizeof(T)) {
+                throw memory_operation_exception("Read failed.",
+                                                  memory_error_code::READ_FAILED);
+            }
+            return value;
+        }
+
+        /**
+         * @brief Reads @p size bytes starting at address+offset into a vector
+         *        via the bound accessor.
+         */
+        [[nodiscard]] std::vector<uint8_t> read_bytes(size_t size, int offset = 0) const {
+            std::vector<uint8_t> buffer(size);
+            const size_t bytes_read = accessor->read(address + offset, buffer.data(), size);
+            buffer.resize(bytes_read);
+            return buffer;
+        }
+
+        /**
+         * @brief Writes @p value (sizeof(T) bytes) to address+offset via the bound
+         *        accessor.
+         */
+        template<typename T>
+        void set(const T& value) {
+            if (accessor->write(address, &value, sizeof(T)) != sizeof(T)) {
+                throw memory_operation_exception("Write failed.",
+                                                  memory_error_code::WRITE_FAILED);
+            }
+        }
+
+        /**
+         * @brief Writes a typed value at address+offset via the bound accessor.
+         */
+        template<typename T>
+        void write(const T& value, int offset = 0) {
+            if (accessor->write(address + offset, &value, sizeof(T)) != sizeof(T)) {
+                throw memory_operation_exception("Write failed.",
+                                                  memory_error_code::WRITE_FAILED);
+            }
+        }
+
+        /**
+         * @brief Writes raw bytes at address+offset via the bound accessor.
+         */
+        void write_bytes(std::span<const uint8_t> bytes, int offset = 0) {
+            if (accessor->write(address + offset, bytes.data(), bytes.size())
+                != bytes.size()) {
+                throw memory_operation_exception("Write failed.",
+                                                  memory_error_code::WRITE_FAILED);
+            }
         }
 
         /**
@@ -199,42 +304,57 @@ namespace bytebinder {
          * @throws memory_operation_exception If the hook could not be enabled.
          */
         template<typename T>
-        void hook(T *detourFunction, T **originalFunction = nullptr) {
+        hook_handle hook(T *detour_function, T **original_function = nullptr) {
+            if (!is_local()) {
+                throw memory_operation_exception(
+                    "hook requires a local accessor; remote process hooking is not supported.",
+                    memory_error_code::INVALID_OPERATION);
+            }
             if (get<uint8_t>() == 0xE8) {
-                if (originalFunction) {
-                    *originalFunction = reinterpret_cast<T*>(rip(1).address);
+                if (original_function) {
+                    *original_function = reinterpret_cast<T*>(rip(1).address);
                 }
-
-                set_call(detourFunction);
-                return;
+                set_call(reinterpret_cast<void *>(detour_function));
+                return hook_handle();
             }
 
             try {
-                PLH::Detour* detour = nullptr;
+                std::unique_ptr<PLH::Detour> detour;
 
                 if constexpr (sizeof(void*) == 4) {
-                    detour = new PLH::x86Detour(
+                    detour = std::make_unique<PLH::x86Detour>(
                         address,
-                        reinterpret_cast<uintptr_t>(detourFunction),
-                        reinterpret_cast<uintptr_t*>(originalFunction)
-                    );
+                        reinterpret_cast<uintptr_t>(detour_function),
+                        reinterpret_cast<uintptr_t*>(original_function));
                 } else {
-                    detour = new PLH::x64Detour(
+                    detour = std::make_unique<PLH::x64Detour>(
                         address,
-                        reinterpret_cast<uintptr_t>(detourFunction),
-                        reinterpret_cast<uintptr_t*>(originalFunction)
-                    );
+                        reinterpret_cast<uintptr_t>(detour_function),
+                        reinterpret_cast<uintptr_t*>(original_function));
                 }
-
-                mem::detours.push_back(detour);
 
                 if (!detour->hook()) {
-                    throw memory_operation_exception("Unable to hook the function.", memory_error_code::HOOK_INSTALLATION_FAILED);
+                    throw memory_operation_exception("Unable to hook the function.",
+                                                      memory_error_code::HOOK_INSTALLATION_FAILED);
                 }
-            } catch (const std::exception& e) {
-                throw memory_operation_exception("Unable to hook the function: " + std::string(e.what()), memory_error_code::HOOK_INSTALLATION_FAILED);
+
+                PLH::Detour* raw_detour_pointer = detour.get();
+                {
+                    std::lock_guard<std::mutex> guard(mem::global_mutex);
+                    mem::detours.push_back(std::move(detour));
+                }
+                return hook_handle(raw_detour_pointer);
+            } catch (const memory_operation_exception&) {
+                throw;
+            } catch (const std::exception& exception) {
+                throw memory_operation_exception(
+                    "Unable to hook the function: " + std::string(exception.what()),
+                    memory_error_code::HOOK_INSTALLATION_FAILED);
             }
         }
+
+        static bool unhook(hook_handle& handle);
+        static void unhook_all();
 
         /**
          * @brief Compares the memory block at the current address with the given buffer.
@@ -269,49 +389,81 @@ namespace bytebinder {
          * @return A mem object representing the address where the pattern is found.
          */
         template<size_t Size>
-        static mem scan(const char(&ida_pattern)[Size])  {
-            char signature[128];
-            char mask[128];
-            size_t size = 0;
+        static mem scan(const char(&ida_pattern)[Size]) {
+            std::string signature_bytes;
+            std::string match_mask;
+            signature_bytes.reserve(Size / 2);
+            match_mask.reserve(Size / 2);
+
+            auto is_hex_digit = [](char character) {
+                return (character >= '0' && character <= '9')
+                    || (character >= 'a' && character <= 'f')
+                    || (character >= 'A' && character <= 'F');
+            };
 
             try {
-                for (size_t i = 0; i < Size; ++i, ++size) {
-                    char currentChar = ida_pattern[i];
-
-                    if ((currentChar >= 'a' && currentChar <= 'f') || (currentChar >= 'A' && currentChar <= 'F') || (currentChar >= '0' && currentChar <= '9')) {
-                        if (i + 1 >= Size || ida_pattern[i + 1] == '\0') {
+                for (size_t cursor = 0; cursor < Size; ) {
+                    const char current_character = ida_pattern[cursor];
+                    if (current_character == '\0') {
+                        break;
+                    }
+                    if (current_character == ' ' || current_character == '\t') {
+                        ++cursor;
+                        continue;
+                    }
+                    if (current_character == '?') {
+                        signature_bytes.push_back('\x00');
+                        match_mask.push_back('?');
+                        ++cursor;
+                        if (cursor < Size && ida_pattern[cursor] == '?') {
+                            ++cursor;
+                        }
+                        continue;
+                    }
+                    if (is_hex_digit(current_character)) {
+                        if (cursor + 1 >= Size || ida_pattern[cursor + 1] == '\0') {
                             throw std::invalid_argument("Incomplete byte in pattern");
                         }
-
-                        signature[size] = (char_from_hex(currentChar) << 4) + char_from_hex(ida_pattern[i + 1]);
-                        mask[size] = 'x';
-                        i += 2;
-                    } else if (currentChar == '?') {
-                        signature[size] = '\x00';
-                        mask[size] = '?';
-                        ++i;
-                    } else {
-                        --size;
+                        const char second_character = ida_pattern[cursor + 1];
+                        if (!is_hex_digit(second_character)) {
+                            throw std::invalid_argument("Invalid hex digit in pattern");
+                        }
+                        signature_bytes.push_back(
+                            static_cast<char>((char_from_hex(current_character) << 4)
+                                              | char_from_hex(second_character)));
+                        match_mask.push_back('x');
+                        cursor += 2;
+                        continue;
                     }
+                    throw std::invalid_argument("Unexpected character in pattern");
                 }
-            } catch (const std::invalid_argument& e) {
-                if (is_debug()) {
-                    std::cerr << "[bytebinder] " << "Corrupt pattern: " << ida_pattern << std::endl;
-                } else {
-                    throw memory_operation_exception(std::string("Error parsing pattern: ") + e.what(),memory_error_code::PATTERN_MATCH_FAILED);
+            } catch (const std::invalid_argument& exception) {
+                if (is_dry_run()) {
+                    std::cerr << "[bytebinder] Corrupt pattern: " << ida_pattern << std::endl;
+                    return mem();
                 }
+                throw memory_operation_exception(
+                    std::string("Error parsing pattern: ") + exception.what(),
+                    memory_error_code::PATTERN_MATCH_FAILED);
             }
 
-            signature[size] = 0;
-            mask[size] = 0;
-
-            mem found(pattern(signature, mask, size).scan());
-            if (found.address == std::numeric_limits<uintptr_t>::max()) {
-                if (is_debug()) {
-                    std::cerr << "[bytebinder] " << "Memory pattern not found: " << ida_pattern << std::endl;
-                } else {
-                    throw memory_operation_exception("Pattern not found in memory.",memory_error_code::PATTERN_MATCH_FAILED);
+            if (signature_bytes.empty()) {
+                if (is_dry_run()) {
+                    std::cerr << "[bytebinder] Empty pattern" << std::endl;
+                    return mem();
                 }
+                throw memory_operation_exception("Pattern is empty.",
+                                                  memory_error_code::PATTERN_MATCH_FAILED);
+            }
+
+            mem found(pattern(std::move(signature_bytes), std::move(match_mask)).scan());
+            if (!found.valid()) {
+                if (is_dry_run()) {
+                    std::cerr << "[bytebinder] Memory pattern not found: " << ida_pattern << std::endl;
+                    return mem();
+                }
+                throw memory_operation_exception("Pattern not found in memory.",
+                                                  memory_error_code::PATTERN_MATCH_FAILED);
             }
 
             return found;
@@ -325,6 +477,23 @@ namespace bytebinder {
          * @throws memory_operation_exception If there is insufficient space in the heap or the allocation fails.
          */
         static mem alloc(size_t size);
+
+        /**
+         * @brief Allocates @p size bytes of executable memory within ±2 GiB of @p target_address.
+         *        Used for trampolines that need to be reachable by a 32-bit relative call/jump.
+         *
+         * @throws memory_operation_exception if no suitable region is available.
+         */
+        static mem alloc_near(uintptr_t target_address, size_t size);
+
+        /**
+         * @brief Removes write permission and adds execute permission on @p size bytes
+         *        starting at @p region. Use after writing generated code to a buffer
+         *        previously allocated as read-write to enforce W^X discipline.
+         *
+         * @throws memory_operation_exception if the protection change fails.
+         */
+        static void make_executable(mem region, size_t size);
 
         /**
          * @brief Assembles machine code using a provided assembly function and returns the address where the code is located.
@@ -356,7 +525,9 @@ namespace bytebinder {
          * @param interval The time interval in milliseconds between checks. Default is 1000 milliseconds.
          * @throws memory_operation_exception if the initial memory read fails or if the address is invalid.
          */
-        void watch(size_t size, const std::function<void()> &callback, unsigned interval = 1000);
+        [[nodiscard]] watch_handle watch(size_t size,
+                                          std::function<void()> callback,
+                                          std::chrono::milliseconds interval = std::chrono::milliseconds{1000}) const;
 
         /**
          * @struct storage
@@ -403,7 +574,8 @@ namespace bytebinder {
             return 0;
         }
 
-        static bool debug_mode;
-        static std::vector<PLH::Detour*> detours;
+        static std::atomic_bool dry_run_mode;
+        static std::vector<std::unique_ptr<PLH::Detour>> detours;
+        static std::mutex global_mutex;
     };
 }

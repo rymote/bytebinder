@@ -6,21 +6,30 @@
 # This file is part of bytebinder, a powerful tool for reading, writing, hooking, and manipulating memory addresses.
 #
 # Repository: https://github.com/rymote/bytebinder
-#
-# For issues, suggestions, or contributions, please visit the repository or contact the authors.
-#
-# This software is provided "as is", without warranty of any kind, express or implied, including but not limited to the warranties
-# of merchantability, fitness for a particular purpose, and noninfringement. In no event shall the authors or copyright holders
-# be liable for any claim, damages, or other liability, whether in an action of contract, tort, or otherwise, arising from, out
-# of, or in connection with the software or the use or other dealings in the software.
 
 cmake_minimum_required(VERSION 3.28)
 
-set(PROJECT_NAME bytebinder)
-project(${PROJECT_NAME})
+project(bytebinder
+    VERSION 0.2.0
+    LANGUAGES CXX
+)
+
+include(CMakePackageConfigHelpers)
+include(GNUInstallDirs)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
+set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+option(BYTEBINDER_BUILD_STATIC "Build the static archive target" ON)
+option(BYTEBINDER_BUILD_SHARED "Build the shared library target" ON)
+option(BYTEBINDER_BUILD_TESTS  "Build the Catch2 test runner"
+       ${PROJECT_IS_TOP_LEVEL})
+option(BYTEBINDER_ENABLE_SANITIZERS "Enable AddressSanitizer + UBSan in Debug builds" OFF)
 
 set(POLYHOOK_BUILD_STATIC_RUNTIME ON CACHE BOOL "")
 
@@ -28,64 +37,149 @@ if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
-file(GLOB_RECURSE SOURCES "src/*.cpp")
-file(GLOB_RECURSE HEADERS "include/*.h")
-file(GLOB_RECURSE TESTS "tests/*.cpp")
-
-include_directories(include)
-
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/deps/polyhook)
 
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/deps/polyhook)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/deps/polyhook/zydis/include)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/deps/polyhook/zydis/dependencies/zycore/include)
+# Workaround: PolyHook 8cd6cb4 forgot #include <iterator> in x64Detour.cpp;
+# inject it via the compiler so we don't have to patch the submodule.
+if(NOT MSVC)
+    target_compile_options(PolyHook_2 PRIVATE -include iterator)
+endif()
 
-add_library(${PROJECT_NAME}-static STATIC ${SOURCES} ${HEADERS})
-target_link_libraries(${PROJECT_NAME}-static PolyHook_2)
-
-add_library(${PROJECT_NAME}-shared SHARED ${SOURCES} ${HEADERS})
-target_link_libraries(${PROJECT_NAME}-shared PolyHook_2)
-
-set_target_properties(${PROJECT_NAME}-static PROPERTIES OUTPUT_NAME ${PROJECT_NAME})
-set_target_properties(${PROJECT_NAME}-shared PROPERTIES OUTPUT_NAME ${PROJECT_NAME})
-
-set_target_properties(${PROJECT_NAME}-shared PROPERTIES
-    OUTPUT_NAME ${PROJECT_NAME}
-    PUBLIC_HEADER "${HEADERS}"
+set(BYTEBINDER_PUBLIC_HEADERS
+    include/bytebinder.h
+    include/bytebinder_api.h
+    include/init_system.h
+    include/local_accessor.h
+    include/macros.h
+    include/mem.h
+    include/memory_accessor.h
+    include/memory_exceptions.h
+    include/pattern.h
+    include/pch.h
+    include/process.h
+    include/remote_accessor.h
+    include/scoped_unlock.h
 )
 
-set_target_properties(${PROJECT_NAME}-static PROPERTIES
-    OUTPUT_NAME ${PROJECT_NAME}
-    PUBLIC_HEADER "${HEADERS}"
+set(BYTEBINDER_SOURCES
+    src/local_accessor.cpp
+    src/mem.cpp
+    src/memory_exceptions.cpp
+    src/pattern.cpp
+    src/process.cpp
+    src/remote_accessor.cpp
+    src/scoped_unlock.cpp
 )
 
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
-
-target_precompile_headers(${PROJECT_NAME}-static PUBLIC include/pch.h)
-target_precompile_headers(${PROJECT_NAME}-shared PUBLIC include/pch.h)
-
-install(TARGETS ${PROJECT_NAME}-static ${PROJECT_NAME}-shared
-    ARCHIVE DESTINATION lib
-    LIBRARY DESTINATION lib
-    RUNTIME DESTINATION lib
-    PUBLIC_HEADER DESTINATION include/${PROJECT_NAME}
+add_library(bytebinder-objects OBJECT
+    ${BYTEBINDER_SOURCES}
+    ${BYTEBINDER_PUBLIC_HEADERS}
 )
 
-include(FetchContent)
-FetchContent_Declare(
-    Catch2
-    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-    GIT_TAG v3.6.0
+target_include_directories(bytebinder-objects
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/polyhook
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/polyhook/zydis/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/polyhook/zydis/dependencies/zycore/include
 )
-FetchContent_MakeAvailable(Catch2)
 
-add_executable(${PROJECT_NAME}-tests ${TESTS} ${SOURCES} ${HEADERS})
-target_link_libraries(${PROJECT_NAME}-tests PRIVATE Catch2::Catch2 Catch2::Catch2WithMain PolyHook_2)
-set_target_properties(${PROJECT_NAME}-tests PROPERTIES OUTPUT_NAME ${PROJECT_NAME}_tests)
+target_link_libraries(bytebinder-objects PUBLIC PolyHook_2)
+target_precompile_headers(bytebinder-objects PUBLIC include/pch.h)
 
-include(CTest)
-include(Catch)
+if(BYTEBINDER_ENABLE_SANITIZERS AND NOT MSVC)
+    target_compile_options(bytebinder-objects PUBLIC
+        $<$<CONFIG:Debug>:-fsanitize=address;-fsanitize=undefined;-fno-omit-frame-pointer>
+    )
+    target_link_options(bytebinder-objects PUBLIC
+        $<$<CONFIG:Debug>:-fsanitize=address;-fsanitize=undefined>
+    )
+endif()
 
-catch_discover_tests(${PROJECT_NAME}-tests)
+set(BYTEBINDER_BUILT_TARGETS "")
+
+if(BYTEBINDER_BUILD_STATIC)
+    add_library(bytebinder-static STATIC $<TARGET_OBJECTS:bytebinder-objects>)
+    target_link_libraries(bytebinder-static PUBLIC bytebinder-objects)
+    set_target_properties(bytebinder-static PROPERTIES
+        OUTPUT_NAME bytebinder
+        EXPORT_NAME static
+    )
+    list(APPEND BYTEBINDER_BUILT_TARGETS bytebinder-static)
+endif()
+
+if(BYTEBINDER_BUILD_SHARED)
+    add_library(bytebinder-shared SHARED $<TARGET_OBJECTS:bytebinder-objects>)
+    target_link_libraries(bytebinder-shared PUBLIC bytebinder-objects)
+    target_compile_definitions(bytebinder-objects PRIVATE BYTEBINDER_BUILD_SHARED)
+    target_compile_definitions(bytebinder-shared INTERFACE BYTEBINDER_USE_SHARED)
+    set_target_properties(bytebinder-shared PROPERTIES
+        OUTPUT_NAME bytebinder
+        VERSION ${PROJECT_VERSION}
+        SOVERSION ${PROJECT_VERSION_MAJOR}
+        EXPORT_NAME shared
+    )
+    list(APPEND BYTEBINDER_BUILT_TARGETS bytebinder-shared)
+endif()
+
+if(BYTEBINDER_BUILT_TARGETS)
+    set_target_properties(${BYTEBINDER_BUILT_TARGETS} PROPERTIES
+        ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
+        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
+    )
+endif()
+
+install(TARGETS ${BYTEBINDER_BUILT_TARGETS} bytebinder-objects PolyHook_2
+    EXPORT bytebinderTargets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+install(FILES ${BYTEBINDER_PUBLIC_HEADERS}
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/bytebinder)
+
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/bytebinderConfigVersion.cmake
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/bytebinderConfig.cmake
+"include(\"\${CMAKE_CURRENT_LIST_DIR}/bytebinderTargets.cmake\")\n")
+
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/bytebinderConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/bytebinderConfigVersion.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/bytebinder)
+
+install(EXPORT bytebinderTargets
+    NAMESPACE bytebinder::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/bytebinder)
+
+if(BYTEBINDER_BUILD_TESTS)
+    enable_testing()
+    include(FetchContent)
+    FetchContent_Declare(
+        Catch2
+        GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+        GIT_TAG v3.6.0
+    )
+    FetchContent_MakeAvailable(Catch2)
+
+    add_executable(bytebinder-tests tests/tests.cpp)
+    target_link_libraries(bytebinder-tests
+        PRIVATE
+            $<IF:$<TARGET_EXISTS:bytebinder-static>,bytebinder-static,bytebinder-shared>
+            Catch2::Catch2WithMain)
+    set_target_properties(bytebinder-tests PROPERTIES
+        OUTPUT_NAME bytebinder_tests
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
+    )
+
+    include(CTest)
+    include(Catch)
+    catch_discover_tests(bytebinder-tests)
+endif()

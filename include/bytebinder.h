@@ -24,5 +24,9 @@
 #include "mem.h"
 #include "pattern.h"
 #include "init_system.h"
+#include "memory_accessor.h"
+#include "local_accessor.h"
+#include "remote_accessor.h"
+#include "process.h"
 
 namespace bb = bytebinder;

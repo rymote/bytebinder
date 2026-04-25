@@ -60,7 +60,7 @@ namespace bytebinder {
      * This class encapsulates errors that occur during memory operations, providing detailed error messages
      * and potentially additional context or error codes.
      */
-    class memory_operation_exception : public std::exception {
+    class BYTEBINDER_API memory_operation_exception : public std::exception {
     private:
         std::string message; ///< Detailed error message.
         memory_error_code errorCode; ///< Error code enum.

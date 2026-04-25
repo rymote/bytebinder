@@ -18,6 +18,8 @@
 
 #pragma once
 
+#include "bytebinder_api.h"
+
 #if defined(_WIN32)
     #define NOMINMAX
     #include <windows.h>
@@ -27,6 +29,9 @@
     #include <unistd.h>
     #include <fcntl.h>
     #include <dlfcn.h>
+    #include <link.h>
+    #include <elf.h>
+    #include <signal.h>
 #endif
 
 #include <exception>
@@ -38,8 +43,16 @@
 #include <iostream>
 #include <vector>
 #include <memory>
+#include <algorithm>
 #include <functional>
 #include <iomanip>
 #include <thread>
 #include <chrono>
 #include <unordered_map>
+#include <atomic>
+#include <mutex>
+#include <cstdio>
+#include <utility>
+#include <optional>
+#include <string_view>
+#include <span>

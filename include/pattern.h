@@ -20,50 +20,32 @@
 
 #include "pch.h"
 #include "memory_exceptions.h"
-#include "mem.h"
 
 namespace bytebinder {
-    /**
-     * @brief Represents a memory pattern, often used for pattern scanning within binary data.
-     *
-     * This class encapsulates the signature and mask of the pattern, along with its size, to facilitate memory scanning based on this pattern.
-     */
-    class pattern {
+    class memory_accessor;
+
+    class BYTEBINDER_API pattern {
     public:
-        std::string signature; ///< The binary pattern as a string.
-        std::string mask; ///< The mask where 'x' indicates a byte to match and '?' indicates a wildcard byte.
-        size_t size; ///< The size of the pattern.
+        std::string signature; ///< The binary pattern as a string of length size().
+        std::string mask;      ///< Same length as signature; 'x' = match byte, '?' = wildcard.
 
-        /**
-         * @brief Constructs a pattern object with the specified signature, mask, and size.
-         *
-         * @param signature The pattern's byte signature represented as a string.
-         * @param mask The pattern's mask where each 'x' represents a byte that must match and each '?' represents any byte.
-         * @param size The length of the pattern and mask.
-         */
-        pattern(char *signature, char *mask, size_t size);
+        pattern(std::string signature_bytes, std::string match_mask);
 
-        /**
-         * @brief Scans memory for the pattern starting from the base address provided by `mem::storage()` up to the end of its reported size.
-         *
-         * This method iterates over memory, applying the `match` function to find the pattern.
-         *
-         * @throws memory_operation_exception if the pattern cannot be found within the memory range.
-         * @return The address where the pattern is found, or `std::numeric_limits<uintptr_t>::max()` if the pattern is not found.
-         */
+        [[nodiscard]] size_t size() const noexcept { return signature.size(); }
+
+        /// Scans the local process's mem::storage range. Back-compat entry point.
         [[nodiscard]] uintptr_t scan() const;
 
+        /// Scans @p total_size bytes starting at @p base via @p accessor in 64 KiB
+        /// chunks with overlap. Returns the first match address or
+        /// numeric_limits<uintptr_t>::max() if not found.
+        [[nodiscard]] uintptr_t scan(memory_accessor& accessor,
+                                       uintptr_t base, size_t total_size) const;
+
     private:
-        /**
-         * @brief Checks if the memory at a given address matches the specified pattern and mask.
-         *
-         * This static function compares bytes one by one, respecting the mask ('x' must match, '?' can be any byte).
-         *
-         * @param address The starting address to check for a match.
-         * @param pattern The byte pattern as a C-style string.
-         * @param mask The mask for the pattern as a C-style string.
-         * @return True if the pattern matches the memory at the address, false otherwise.
-         */
-        static bool match(uintptr_t address, const char *pattern, const char *mask);
+        [[nodiscard]] bool match_local(uintptr_t haystack_address) const noexcept;
+        [[nodiscard]] bool match_buffer(const uint8_t* buffer) const noexcept;
     };
+
+    BYTEBINDER_API pattern parse_ida_pattern(std::string_view ida_pattern);
 }
