@@ -339,6 +339,21 @@ namespace {
         vmt_test_observed_value = input;
         return input * 1000;
     }
+
+    // Defeats gcc/clang -O3 devirtualization of stack-local virtual calls.
+    // The wrapper compiles at -O0 (gcc) / `optnone` (clang) and is also
+    // marked noinline so the call site can't fold the body in. Devirtualization
+    // happens during inlining and IPA, both of which are disabled here.
+#if defined(__GNUC__) && !defined(__clang__)
+    __attribute__((noinline, noipa, optimize("O0")))
+#elif defined(__clang__)
+    __attribute__((noinline, optnone))
+#elif defined(_MSC_VER)
+    __declspec(noinline)
+#endif
+    int vmt_test_call_compute(vmt_target* target, int value) {
+        return target->compute(value);
+    }
 }
 
 TEST_CASE("vmt::hook redirects a virtual call and unhook restores it", "[vmt][hook]") {
@@ -364,24 +379,14 @@ TEST_CASE("vmt::hook redirects a virtual call and unhook restores it", "[vmt][ho
             == reinterpret_cast<uintptr_t>(&vmt_test_detour));
 
     vmt_test_observed_value = 0;
-    // Force a real virtual dispatch through a pointer the compiler can't see
-    // resolved statically — prevents devirtualization of the stack object.
-    vmt_target* opaque_pointer = &instance;
-#if defined(__GNUC__) || defined(__clang__)
-    asm volatile("" : "+r"(opaque_pointer) :: "memory");
-#endif
-    const int detoured_result = opaque_pointer->compute(7);
+    const int detoured_result = vmt_test_call_compute(&instance, 7);
     REQUIRE(vmt_test_observed_value == 7);
     REQUIRE(detoured_result == 7000);
 
     REQUIRE(handle.unhook());
     REQUIRE_FALSE(handle.installed());
 
-    vmt_target* opaque_after = &instance;
-#if defined(__GNUC__) || defined(__clang__)
-    asm volatile("" : "+r"(opaque_after) :: "memory");
-#endif
-    REQUIRE(opaque_after->compute(9) == 10);
+    REQUIRE(vmt_test_call_compute(&instance, 9) == 10);
 }
 
 TEST_CASE("mem::disasm decodes a known x64 sequence", "[mem][disasm]") {
