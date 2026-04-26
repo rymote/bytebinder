@@ -68,7 +68,7 @@ jobs:
 
       - name: Run tests
         working-directory: build
-        run: ctest --output-on-failure -C ${{ matrix.build_type }}
+        run: ctest --output-on-failure --timeout 60 -C ${{ matrix.build_type }}
 
       - name: Normalize OS name
         id: normalize_os
