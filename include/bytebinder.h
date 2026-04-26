@@ -28,5 +28,8 @@
 #include "local_accessor.h"
 #include "remote_accessor.h"
 #include "bb_process.h"
+#include "disasm.h"
+#include "symbols.h"
+#include "vmt.h"
 
 namespace bb = bytebinder;

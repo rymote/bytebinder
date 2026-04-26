@@ -51,7 +51,9 @@
 
 - **In-process and out-of-process**: same `bb::mem` API drives the calling process or a remote PID via `bb::process::attach(pid)`.
 - **Memory address handling**: fluent offset math, RIP-relative arithmetic, typed accessor-aware reads and writes (`read<T>`, `write<T>`, `read_bytes`, `write_bytes`).
-- **Hooking and patching**: PolyHook 2.0-backed function detours, `nop`/`ret`/`jmp`/`call` primitives, declarative `bb::static_hook` registrations.
+- **Hooking and patching**: PolyHook 2.0-backed function detours, `nop`/`ret`/`jmp`/`call` primitives, declarative `bb::static_hook` registrations, `bb::vmt` vtable patching.
+- **Disassembly**: `mem.disasm(n)` returns Zydis-decoded `bb::instruction`s — works on local and remote memory.
+- **Symbol resolution**: `process.resolve_symbol(name)` and `process.symbolize(addr)` — Linux ELF `.dynsym`/`.symtab` parser, Windows DbgHelp.
 - **Memory scanning and pattern matching**: IDA-style signatures with chunked-read scanning for remote targets.
 - **Memory watching**: cancellable polling with RAII handles.
 - **Foreign protection changes**: `ptrace`-injected `mprotect` on Linux x86_64, aarch64, and 32-bit ARM (with multi-thread freeze).
@@ -199,6 +201,60 @@ syntax-checked under cross-compilers (`crossbuild-essential-arm64`,
 live verification. Reads, writes, region enumeration, and scanning never
 need ptrace.
 
+### Disassembly
+
+```cpp
+bb::mem entry_point = bb::mem(reinterpret_cast<void*>(&some_function));
+for (const auto& decoded : entry_point.disasm(/*max_instructions=*/8)) {
+    std::printf("0x%lx  %-40s  ; %zu bytes\n",
+                decoded.address, decoded.text.c_str(), decoded.length);
+}
+```
+
+Backed by Zydis. Decoder mode is x86_64 on 64-bit hosts, x86 on 32-bit hosts.
+Reads the bytes through the bound accessor, so it works equally for an
+in-process pointer or a `bb::process::attach(pid).at(addr)` remote view.
+
+### vtable hooking
+
+```cpp
+bb::vmt vtable_view(reinterpret_cast<uintptr_t>(my_object));
+auto handle = vtable_view.hook(/*index=*/3, reinterpret_cast<void*>(&my_detour));
+
+// ... later ...
+handle.unhook();   // restores the original entry
+```
+
+The patch is process-wide: every instance sharing the vtable observes the
+detour. To isolate one instance, copy the vtable first and rebind the
+object's vtable pointer (application-specific, not provided here).
+
+### Symbol resolution
+
+```cpp
+auto current_process = bb::process::current();
+
+if (auto resolved = current_process.resolve_symbol("memcpy")) {
+    std::printf("memcpy lives at 0x%lx (in %s)\n",
+                resolved->address, resolved->module_name.c_str());
+}
+
+if (auto symbolized = current_process.symbolize(some_address)) {
+    std::printf("0x%lx → %s+%lu\n",
+                some_address, symbolized->name.c_str(),
+                some_address - symbolized->address);
+}
+```
+
+On **Linux**, parses each loaded module's ELF `.dynsym` and `.symtab`
+directly from disk (no `libelf` dependency). Stripped binaries only expose
+dynamic symbols. Tables are cached per module path.
+
+On **Windows**, uses DbgHelp's `SymFromName` / `SymFromAddr`. Non-exported
+symbols require PDB availability for the loaded module. Currently
+local-only (remote-process Windows symbols would need to share the
+`OpenProcess` HANDLE with DbgHelp; tracked separately).
+
 ### Declarative pattern-bound hooks
 
 ```cpp
@@ -234,7 +290,13 @@ The full API is documented inline in `include/`. Briefly:
   primitives (`nop`, `ret`, `jmp`, `call`, `set_call`, `hook<T>` — all
   local-only); search (`compare`, `find`); allocation (`alloc`, `alloc_near`,
   `make_executable` — local-only); code generation (`assemble` — local-only);
-  observability (`dump`, `watch`).
+  observability (`dump`, `watch`); disassembly (`disasm`, `disasm_one` via Zydis).
+- `bb::instruction` — decoded instruction from `mem::disasm`: address,
+  length, mnemonic, formatted Intel-syntax text, raw bytes.
+- `bb::vmt` / `bb::vmt_handle` — read/patch vtable entries on objects with a
+  reversible handle.
+- `bb::symbol_info` — name + address + size + module returned by
+  `process::resolve_symbol` / `process::symbolize`.
 - `bb::scoped_unlock` — RAII page-protection flip; restores the original
   permissions on destruction.
 - `bb::pattern` — IDA-style signature matcher. Used by `mem::scan`.

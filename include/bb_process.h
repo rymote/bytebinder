@@ -8,6 +8,7 @@
 #pragma once
 
 #include "memory_accessor.h"
+#include "symbols.h"
 
 #include <memory>
 #include <optional>
@@ -50,6 +51,25 @@ namespace bytebinder {
          */
         [[nodiscard]] mem scan(std::string_view ida_pattern,
                                 std::optional<std::string_view> module_name = std::nullopt) const;
+
+        /**
+         * @brief Resolves a named symbol (function or data) to its runtime
+         *        address. Walks every loaded module unless @p module_name
+         *        restricts the search.
+         *
+         * On Linux, parses .dynsym and .symtab from each ELF file on disk;
+         * stripped binaries only expose dynamic symbols. On Windows, uses
+         * DbgHelp (requires PDB availability for non-exported symbols).
+         */
+        [[nodiscard]] std::optional<symbol_info> resolve_symbol(
+            std::string_view symbol_name,
+            std::optional<std::string_view> module_name = std::nullopt) const;
+
+        /**
+         * @brief Reverse lookup: returns the symbol whose [address, address+size)
+         *        contains @p address, or nullopt if none found.
+         */
+        [[nodiscard]] std::optional<symbol_info> symbolize(uintptr_t address) const;
 
     private:
         std::shared_ptr<memory_accessor> accessor_impl;

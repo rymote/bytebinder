@@ -46,8 +46,10 @@ if(NOT MSVC)
 endif()
 
 set(BYTEBINDER_PUBLIC_HEADERS
+    include/bb_process.h
     include/bytebinder.h
     include/bytebinder_api.h
+    include/disasm.h
     include/init_system.h
     include/local_accessor.h
     include/macros.h
@@ -56,12 +58,14 @@ set(BYTEBINDER_PUBLIC_HEADERS
     include/memory_exceptions.h
     include/pattern.h
     include/pch.h
-    include/bb_process.h
     include/remote_accessor.h
     include/scoped_unlock.h
+    include/symbols.h
+    include/vmt.h
 )
 
 set(BYTEBINDER_SOURCES
+    src/disasm.cpp
     src/local_accessor.cpp
     src/mem.cpp
     src/memory_exceptions.cpp
@@ -69,6 +73,8 @@ set(BYTEBINDER_SOURCES
     src/process.cpp
     src/remote_accessor.cpp
     src/scoped_unlock.cpp
+    src/symbols.cpp
+    src/vmt.cpp
 )
 
 add_library(bytebinder-objects OBJECT
@@ -87,6 +93,9 @@ target_include_directories(bytebinder-objects
 )
 
 target_link_libraries(bytebinder-objects PUBLIC PolyHook_2)
+if(WIN32)
+    target_link_libraries(bytebinder-objects PUBLIC dbghelp)
+endif()
 target_precompile_headers(bytebinder-objects PUBLIC include/pch.h)
 
 if(BYTEBINDER_ENABLE_SANITIZERS AND NOT MSVC)

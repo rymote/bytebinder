@@ -24,6 +24,9 @@
 #include "scoped_unlock.h"
 #include "pattern.h"
 #include "local_accessor.h"
+#include "disasm.h"
+
+#include <array>
 
 #include <asmjit/core/jitruntime.h>
 #include <asmjit/x86/x86assembler.h>
@@ -528,6 +531,20 @@ namespace bytebinder {
         [[nodiscard]] watch_handle watch(size_t size,
                                           std::function<void()> callback,
                                           std::chrono::milliseconds interval = std::chrono::milliseconds{1000}) const;
+
+        /**
+         * @brief Decodes up to @p max_instructions starting at this address using
+         *        Zydis. Reads up to @p max_bytes through the bound accessor first,
+         *        so this works for both local and remote mems. The decoder uses
+         *        x86_64 mode on 64-bit hosts and x86 mode on 32-bit hosts.
+         */
+        [[nodiscard]] std::vector<instruction> disasm(size_t max_instructions,
+                                                       size_t max_bytes = 1024) const;
+
+        /**
+         * @brief Decodes a single instruction at this address.
+         */
+        [[nodiscard]] std::optional<instruction> disasm_one() const;
 
         /**
          * @struct storage

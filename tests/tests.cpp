@@ -329,6 +329,114 @@ TEST_CASE("unhook removes an installed detour", "[mem][hook][unhook]") {
     OrigFunction = nullptr;
 }
 
+namespace {
+    int vmt_test_observed_value = 0;
+    struct vmt_target {
+        virtual ~vmt_target() = default;
+        virtual int compute(int input) { return input + 1; }
+    };
+    int vmt_test_detour(vmt_target* /*self*/, int input) {
+        vmt_test_observed_value = input;
+        return input * 1000;
+    }
+}
+
+TEST_CASE("vmt::hook redirects a virtual call and unhook restores it", "[vmt][hook]") {
+    vmt_target instance;
+    REQUIRE(instance.compute(5) == 6);
+
+    bb::vmt vtable_view(reinterpret_cast<uintptr_t>(&instance));
+    // Itanium C++ ABI: a virtual destructor consumes two slots (D1 + D0),
+    // so the next user-declared virtual sits at index 2. MSVC uses a single
+    // slot, putting compute at index 1.
+#if defined(_MSC_VER)
+    constexpr size_t compute_index = 1;
+#else
+    constexpr size_t compute_index = 2;
+#endif
+
+    const uintptr_t original_pointer = vtable_view.function_at(compute_index);
+    REQUIRE(original_pointer != 0);
+
+    auto handle = vtable_view.hook(compute_index, reinterpret_cast<void*>(&vmt_test_detour));
+    REQUIRE(handle.installed());
+    REQUIRE(vtable_view.function_at(compute_index)
+            == reinterpret_cast<uintptr_t>(&vmt_test_detour));
+
+    vmt_test_observed_value = 0;
+    // Force a real virtual dispatch through a pointer the compiler can't see
+    // resolved statically — prevents devirtualization of the stack object.
+    vmt_target* opaque_pointer = &instance;
+#if defined(__GNUC__) || defined(__clang__)
+    asm volatile("" : "+r"(opaque_pointer) :: "memory");
+#endif
+    const int detoured_result = opaque_pointer->compute(7);
+    REQUIRE(vmt_test_observed_value == 7);
+    REQUIRE(detoured_result == 7000);
+
+    REQUIRE(handle.unhook());
+    REQUIRE_FALSE(handle.installed());
+
+    vmt_target* opaque_after = &instance;
+#if defined(__GNUC__) || defined(__clang__)
+    asm volatile("" : "+r"(opaque_after) :: "memory");
+#endif
+    REQUIRE(opaque_after->compute(9) == 10);
+}
+
+TEST_CASE("mem::disasm decodes a known x64 sequence", "[mem][disasm]") {
+    if constexpr (sizeof(void*) == 8) {
+        memset(buffer, 0, sizeof(buffer));
+        // x64: push rbp; mov rbp, rsp; nop; ret
+        buffer[0] = 0x55;
+        buffer[1] = 0x48; buffer[2] = 0x89; buffer[3] = 0xE5;
+        buffer[4] = 0x90;
+        buffer[5] = 0xC3;
+
+        bb::mem code(reinterpret_cast<void*>(buffer));
+
+        SECTION("disasm_one returns the first instruction") {
+            const auto first_instruction = code.disasm_one();
+            REQUIRE(first_instruction.has_value());
+            REQUIRE(first_instruction->length == 1);
+            REQUIRE(first_instruction->mnemonic == "push");
+        }
+
+        SECTION("disasm walks instructions in order") {
+            const auto decoded = code.disasm(4, 8);
+            REQUIRE(decoded.size() == 4);
+            REQUIRE(decoded[0].mnemonic == "push");
+            REQUIRE(decoded[1].mnemonic == "mov");
+            REQUIRE(decoded[2].mnemonic == "nop");
+            REQUIRE(decoded[3].mnemonic == "ret");
+            REQUIRE(decoded[0].length == 1);
+            REQUIRE(decoded[1].length == 3);
+            REQUIRE(decoded[2].length == 1);
+            REQUIRE(decoded[3].length == 1);
+            REQUIRE(decoded[1].address == decoded[0].address + 1);
+        }
+    }
+}
+
+#if !defined(_WIN32)
+TEST_CASE("process::resolve_symbol finds a libc dynamic symbol", "[process][symbols]") {
+    auto current_process = bb::process::current();
+    const auto resolved = current_process.resolve_symbol("memcpy");
+    REQUIRE(resolved.has_value());
+    REQUIRE(resolved->address != 0);
+    REQUIRE_FALSE(resolved->module_name.empty());
+}
+
+TEST_CASE("process::symbolize round-trips an address back to its name", "[process][symbols]") {
+    auto current_process = bb::process::current();
+    const auto resolved_memcpy = current_process.resolve_symbol("memcpy");
+    REQUIRE(resolved_memcpy.has_value());
+    const auto symbolized = current_process.symbolize(resolved_memcpy->address);
+    REQUIRE(symbolized.has_value());
+    REQUIRE(symbolized->name == "memcpy");
+}
+#endif
+
 TEST_CASE("process::current() returns a usable local handle", "[process][local]") {
     auto current_process = bb::process::current();
     REQUIRE(current_process.is_local());
