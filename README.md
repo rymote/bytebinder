@@ -49,13 +49,22 @@
 
 ## Features
 
-- **Memory Address Handling**: Easily manage and manipulate memory addresses with simple and intuitive methods.
-- **Cross-Platform Support**: Compatible with both Windows and Unix-like systems for maximum flexibility.
-- **Memory Initialization**: Initialize memory addresses and heap allocations efficiently.
-- **Hooking and Patching**: Install hooks and patches on functions with ease.
-- **Memory Scanning and Pattern Matching**: Search for patterns in memory to locate specific data.
-- **Memory Watching**: Monitor changes in memory and trigger callbacks on modifications.
-- **Error Handling**: Robust error handling with detailed exception messages.
+- **In-process and out-of-process**: same `bb::mem` API drives the calling process or a remote PID via `bb::process::attach(pid)`.
+- **Memory address handling**: fluent offset math, RIP-relative arithmetic, typed accessor-aware reads and writes (`read<T>`, `write<T>`, `read_bytes`, `write_bytes`).
+- **Hooking and patching**: PolyHook 2.0-backed function detours, `nop`/`ret`/`jmp`/`call` primitives, declarative `bb::static_hook` registrations.
+- **Memory scanning and pattern matching**: IDA-style signatures with chunked-read scanning for remote targets.
+- **Memory watching**: cancellable polling with RAII handles.
+- **Foreign protection changes**: `ptrace`-injected `mprotect` on Linux x86_64, aarch64, and 32-bit ARM (with multi-thread freeze).
+- **Robust error handling**: typed exceptions with `memory_error_code`.
+
+### Platform support
+
+| Platform | Status |
+|---|---|
+| Windows (MSVC, x64) | supported, exercised in CI |
+| Linux (x86_64) | supported, exercised in CI (Debug + Release, ASan + UBSan) |
+| Linux (aarch64, 32-bit ARM) | code paths cross-compile-checked in CI; runtime tested on real hardware/QEMU only |
+| macOS | not yet — Mach VM / dyld backed accessors are tracked separately |
 
 ## Installation
 
@@ -210,7 +219,11 @@ The full API is documented inline in `include/`. Briefly:
 - `bb::process` — handle to the current process or a remote PID
   (`process::current()`, `process::attach(pid)`). Owns a `memory_accessor`,
   enumerates modules and regions, and exposes `at(address)` plus a
-  process-aware `scan(pattern, optional<module>)`.
+  process-aware `scan(pattern, optional<module>)`. The header is named
+  `bb_process.h` (not `process.h`) to avoid clashing with MSVC's CRT
+  `<process.h>` that `<thread>` pulls in for `_beginthreadex`. The umbrella
+  `bytebinder.h` includes it transitively, so most users never reference
+  the filename directly.
 - `bb::memory_accessor` — abstract read/write/protection/region/module
   surface. Implementations: `bb::local_accessor` (in-process direct
   dereference) and `bb::remote_accessor` (`Read/WriteProcessMemory` or
