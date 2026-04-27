@@ -193,13 +193,12 @@ jobs:
           tag_name: latest-master
           name: Latest master build
           body: |
-            Rolling pre-release built from `master` at commit `${{ github.sha }}`.
+            Built from `master` at commit `${{ github.sha }}`. Replaced on
+            every push to `master`.
 
             One zip per OS × config × link-type variant; each zip contains the
             public headers under `include/` and the built library under `lib/`.
-            Replaced on every push to `master`. Use a tagged `v*` release for
-            stable artifacts.
           draft: false
-          prerelease: true
-          make_latest: false
+          prerelease: false
+          make_latest: true
           files: incoming/*.zip
