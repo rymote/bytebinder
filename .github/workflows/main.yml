@@ -32,14 +32,9 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Install Ninja (Linux/macOS)
-        if: runner.os != 'Windows'
-        run: |
-          if [[ "$RUNNER_OS" == "Linux" ]]; then
-            sudo apt-get update && sudo apt-get install -y ninja-build
-          else
-            brew install ninja
-          fi
+      - name: Install Ninja (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
 
       - name: Configure
         shell: bash
@@ -70,52 +65,41 @@ jobs:
         working-directory: build
         run: ctest --output-on-failure --timeout 60 -C ${{ matrix.build_type }}
 
-      - name: Normalize OS name
-        id: normalize_os
-        shell: bash
-        run: echo "OS_NAME=$(echo ${{ matrix.os }} | sed 's/-latest//')" >> "$GITHUB_ENV"
-
-      - name: Package files
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Stage built libraries
+        if: github.event_name == 'push'
         shell: bash
         run: |
-          mkdir -p package/include package/lib
-          cp -r include package/
+          set -euo pipefail
+          mkdir -p stage
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             if [[ "${{ matrix.link_type }}" == "shared" ]]; then
-              cp build/lib/${{ matrix.build_type }}/${{ env.PROJECT_NAME }}.dll package/lib/
-              cp build/lib/${{ matrix.build_type }}/${{ env.PROJECT_NAME }}.lib package/lib/ || true
+              cp "build/lib/${{ matrix.build_type }}/${{ env.PROJECT_NAME }}.dll" stage/
+              if [[ -f "build/lib/${{ matrix.build_type }}/${{ env.PROJECT_NAME }}.lib" ]]; then
+                cp "build/lib/${{ matrix.build_type }}/${{ env.PROJECT_NAME }}.lib" stage/
+              fi
+              if [[ -f "build/lib/${{ matrix.build_type }}/${{ env.PROJECT_NAME }}.pdb" ]]; then
+                cp "build/lib/${{ matrix.build_type }}/${{ env.PROJECT_NAME }}.pdb" stage/
+              fi
             else
-              cp build/lib/${{ matrix.build_type }}/${{ env.PROJECT_NAME }}.lib package/lib/
-            fi
-          elif [[ "$RUNNER_OS" == "macOS" ]]; then
-            if [[ "${{ matrix.link_type }}" == "shared" ]]; then
-              cp build/lib/lib${{ env.PROJECT_NAME }}*.dylib package/lib/
-            else
-              cp build/lib/lib${{ env.PROJECT_NAME }}.a package/lib/
+              cp "build/lib/${{ matrix.build_type }}/${{ env.PROJECT_NAME }}.lib" stage/
             fi
           else
             if [[ "${{ matrix.link_type }}" == "shared" ]]; then
-              cp build/lib/lib${{ env.PROJECT_NAME }}.so* package/lib/
+              cp build/lib/lib${{ env.PROJECT_NAME }}.so* stage/
             else
-              cp build/lib/lib${{ env.PROJECT_NAME }}.a package/lib/
+              cp build/lib/lib${{ env.PROJECT_NAME }}.a stage/
             fi
           fi
+          ls -la stage/
 
-      - name: Archive package
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: thedoctor0/zip-release@0.7.5
-        with:
-          type: zip
-          path: package
-          filename: bytebinder_${{ env.OS_NAME }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.link_type }}.zip
-
-      - name: Upload artifact
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Upload variant artifact
+        if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
-          name: bytebinder_${{ env.OS_NAME }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.link_type }}
-          path: bytebinder_${{ env.OS_NAME }}_${{ github.ref_name }}_${{ matrix.build_type }}_${{ matrix.link_type }}.zip
+          name: bytebinder-${{ runner.os }}-${{ matrix.build_type }}-${{ matrix.link_type }}
+          path: stage/*
+          retention-days: 14
+          if-no-files-found: error
 
   sanitizers:
     name: AddressSanitizer + UBSan
@@ -149,21 +133,93 @@ jobs:
         run: arm-linux-gnueabihf-g++ -std=c++20 -c src/remote_accessor.cpp -Iinclude -fsyntax-only
 
   release:
-    name: Publish release
-    needs: build
+    name: Publish release bundle
+    needs: [build, sanitizers, cross_arch_syntax_check]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
-          path: artifacts
-          merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+          path: incoming
+          pattern: bytebinder-*
+
+      - name: Assemble release bundle
+        id: bundle
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+            RELEASE_KIND="tag"
+          else
+            VERSION="latest-master-${GITHUB_SHA::7}"
+            RELEASE_KIND="rolling"
+          fi
+
+          BUNDLE_NAME="bytebinder-${VERSION}"
+          BUNDLE_DIR="${BUNDLE_NAME}"
+          mkdir -p "${BUNDLE_DIR}/include"
+          cp -r include/. "${BUNDLE_DIR}/include/"
+
+          for variant_dir in incoming/bytebinder-*; do
+            artifact_name="$(basename "${variant_dir}")"
+            os_part="$(echo "${artifact_name}" | cut -d- -f2 | tr '[:upper:]' '[:lower:]')"
+            cfg_part="$(echo "${artifact_name}" | cut -d- -f3 | tr '[:upper:]' '[:lower:]')"
+            link_part="$(echo "${artifact_name}" | cut -d- -f4)"
+            destination="${BUNDLE_DIR}/${os_part}/${cfg_part}/${link_part}"
+            mkdir -p "${destination}"
+            cp -r "${variant_dir}"/. "${destination}/"
+          done
+
+          {
+            echo "# bytebinder ${VERSION}"
+            echo
+            echo "Bundle layout:"
+            echo "    include/                       — public headers"
+            echo "    <os>/<config>/<link_type>/     — built libraries per variant"
+            echo
+            echo "Built from commit ${GITHUB_SHA}."
+          } > "${BUNDLE_DIR}/README.txt"
+
+          tree -L 4 "${BUNDLE_DIR}" || find "${BUNDLE_DIR}" -maxdepth 4
+
+          ARCHIVE="${BUNDLE_NAME}.zip"
+          zip -r "${ARCHIVE}" "${BUNDLE_DIR}"
+
+          {
+            echo "VERSION=${VERSION}"
+            echo "RELEASE_KIND=${RELEASE_KIND}"
+            echo "ARCHIVE_PATH=${ARCHIVE}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Publish tagged release
+        if: env.RELEASE_KIND == 'tag'
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
           draft: false
           prerelease: false
-          files: artifacts/*.zip
+          files: ${{ env.ARCHIVE_PATH }}
+
+      - name: Publish rolling latest-master release
+        if: env.RELEASE_KIND == 'rolling'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-master
+          name: Latest master build
+          body: |
+            Rolling pre-release built from `master` at commit `${{ github.sha }}`.
+
+            The attached zip contains the public headers under `include/` and
+            built libraries laid out as `<os>/<config>/<link_type>/`. Replaced
+            on every push to `master`. Use a tagged `v*` release for stable
+            artifacts.
+          draft: false
+          prerelease: true
+          make_latest: false
+          files: ${{ env.ARCHIVE_PATH }}
