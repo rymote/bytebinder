@@ -65,39 +65,59 @@ jobs:
         working-directory: build
         run: ctest --output-on-failure --timeout 60 -C ${{ matrix.build_type }}
 
-      - name: Stage built libraries
+      - name: Resolve release version
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "RELEASE_VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_VERSION=latest-master-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          fi
+          echo "OS_NAME=$(echo ${{ matrix.os }} | sed 's/-latest//')" >> "$GITHUB_ENV"
+
+      - name: Package variant zip (include + lib)
         if: github.event_name == 'push'
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p stage
+          STAGE="bytebinder_${OS_NAME}_${RELEASE_VERSION}_${{ matrix.build_type }}_${{ matrix.link_type }}"
+          mkdir -p "${STAGE}/include" "${STAGE}/lib"
+          cp -r include/. "${STAGE}/include/"
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             if [[ "${{ matrix.link_type }}" == "shared" ]]; then
-              cp "build/lib/${{ matrix.build_type }}/${{ env.PROJECT_NAME }}.dll" stage/
+              cp "build/lib/${{ matrix.build_type }}/${{ env.PROJECT_NAME }}.dll" "${STAGE}/lib/"
               if [[ -f "build/lib/${{ matrix.build_type }}/${{ env.PROJECT_NAME }}.lib" ]]; then
-                cp "build/lib/${{ matrix.build_type }}/${{ env.PROJECT_NAME }}.lib" stage/
+                cp "build/lib/${{ matrix.build_type }}/${{ env.PROJECT_NAME }}.lib" "${STAGE}/lib/"
               fi
               if [[ -f "build/lib/${{ matrix.build_type }}/${{ env.PROJECT_NAME }}.pdb" ]]; then
-                cp "build/lib/${{ matrix.build_type }}/${{ env.PROJECT_NAME }}.pdb" stage/
+                cp "build/lib/${{ matrix.build_type }}/${{ env.PROJECT_NAME }}.pdb" "${STAGE}/lib/"
               fi
             else
-              cp "build/lib/${{ matrix.build_type }}/${{ env.PROJECT_NAME }}.lib" stage/
+              cp "build/lib/${{ matrix.build_type }}/${{ env.PROJECT_NAME }}.lib" "${STAGE}/lib/"
             fi
           else
             if [[ "${{ matrix.link_type }}" == "shared" ]]; then
-              cp build/lib/lib${{ env.PROJECT_NAME }}.so* stage/
+              cp build/lib/lib${{ env.PROJECT_NAME }}.so* "${STAGE}/lib/"
             else
-              cp build/lib/lib${{ env.PROJECT_NAME }}.a stage/
+              cp build/lib/lib${{ env.PROJECT_NAME }}.a "${STAGE}/lib/"
             fi
           fi
-          ls -la stage/
+          ZIP_NAME="${STAGE}.zip"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            7z a -tzip "${ZIP_NAME}" "${STAGE}" >/dev/null
+          else
+            zip -r "${ZIP_NAME}" "${STAGE}"
+          fi
+          echo "ZIP_PATH=${ZIP_NAME}" >> "$GITHUB_ENV"
+          ls -la "${ZIP_NAME}"
 
-      - name: Upload variant artifact
+      - name: Upload variant zip as artifact
         if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
           name: bytebinder-${{ runner.os }}-${{ matrix.build_type }}-${{ matrix.link_type }}
-          path: stage/*
+          path: ${{ env.ZIP_PATH }}
           retention-days: 14
           if-no-files-found: error
 
@@ -133,68 +153,28 @@ jobs:
         run: arm-linux-gnueabihf-g++ -std=c++20 -c src/remote_accessor.cpp -Iinclude -fsyntax-only
 
   release:
-    name: Publish release bundle
+    name: Publish per-variant release zips
     needs: [build, sanitizers, cross_arch_syntax_check]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-
       - uses: actions/download-artifact@v4
         with:
           path: incoming
           pattern: bytebinder-*
+          merge-multiple: true
 
-      - name: Assemble release bundle
-        id: bundle
+      - name: Determine release kind
         shell: bash
         run: |
-          set -euxo pipefail
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            VERSION="${GITHUB_REF_NAME}"
-            RELEASE_KIND="tag"
+            echo "RELEASE_KIND=tag" >> "$GITHUB_ENV"
           else
-            VERSION="latest-master-${GITHUB_SHA::7}"
-            RELEASE_KIND="rolling"
+            echo "RELEASE_KIND=rolling" >> "$GITHUB_ENV"
           fi
-
-          BUNDLE_NAME="bytebinder-${VERSION}"
-          BUNDLE_DIR="${BUNDLE_NAME}"
-          mkdir -p "${BUNDLE_DIR}/include"
-          cp -r include/. "${BUNDLE_DIR}/include/"
-
-          for variant_dir in incoming/bytebinder-*; do
-            artifact_name="$(basename "${variant_dir}")"
-            os_part="$(echo "${artifact_name}" | cut -d- -f2 | tr '[:upper:]' '[:lower:]')"
-            cfg_part="$(echo "${artifact_name}" | cut -d- -f3 | tr '[:upper:]' '[:lower:]')"
-            link_part="$(echo "${artifact_name}" | cut -d- -f4)"
-            destination="${BUNDLE_DIR}/${os_part}/${cfg_part}/${link_part}"
-            mkdir -p "${destination}"
-            cp -r "${variant_dir}"/. "${destination}/"
-          done
-
-          {
-            echo "# bytebinder ${VERSION}"
-            echo
-            echo "Bundle layout:"
-            echo "    include/                       — public headers"
-            echo "    <os>/<config>/<link_type>/     — built libraries per variant"
-            echo
-            echo "Built from commit ${GITHUB_SHA}."
-          } > "${BUNDLE_DIR}/README.txt"
-
-          tree -L 4 "${BUNDLE_DIR}" || find "${BUNDLE_DIR}" -maxdepth 4
-
-          ARCHIVE="${BUNDLE_NAME}.zip"
-          zip -r "${ARCHIVE}" "${BUNDLE_DIR}"
-
-          {
-            echo "VERSION=${VERSION}"
-            echo "RELEASE_KIND=${RELEASE_KIND}"
-            echo "ARCHIVE_PATH=${ARCHIVE}"
-          } >> "${GITHUB_ENV}"
+          ls -la incoming/
 
       - name: Publish tagged release
         if: env.RELEASE_KIND == 'tag'
@@ -204,7 +184,7 @@ jobs:
           name: Release ${{ github.ref_name }}
           draft: false
           prerelease: false
-          files: ${{ env.ARCHIVE_PATH }}
+          files: incoming/*.zip
 
       - name: Publish rolling latest-master release
         if: env.RELEASE_KIND == 'rolling'
@@ -215,11 +195,11 @@ jobs:
           body: |
             Rolling pre-release built from `master` at commit `${{ github.sha }}`.
 
-            The attached zip contains the public headers under `include/` and
-            built libraries laid out as `<os>/<config>/<link_type>/`. Replaced
-            on every push to `master`. Use a tagged `v*` release for stable
-            artifacts.
+            One zip per OS × config × link-type variant; each zip contains the
+            public headers under `include/` and the built library under `lib/`.
+            Replaced on every push to `master`. Use a tagged `v*` release for
+            stable artifacts.
           draft: false
           prerelease: true
           make_latest: false
-          files: ${{ env.ARCHIVE_PATH }}
+          files: incoming/*.zip
