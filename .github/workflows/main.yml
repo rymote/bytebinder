@@ -167,13 +167,16 @@ jobs:
           pattern: bytebinder-*
           merge-multiple: true
 
-      - name: Determine release kind
+      - name: Determine release identity
         shell: bash
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             echo "RELEASE_KIND=tag" >> "$GITHUB_ENV"
           else
-            echo "RELEASE_KIND=rolling" >> "$GITHUB_ENV"
+            SHORT_SHA="${GITHUB_SHA::7}"
+            echo "RELEASE_KIND=master" >> "$GITHUB_ENV"
+            echo "MASTER_TAG=master-${SHORT_SHA}" >> "$GITHUB_ENV"
+            echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
           fi
           ls -la incoming/
 
@@ -187,15 +190,15 @@ jobs:
           prerelease: false
           files: incoming/*.zip
 
-      - name: Publish rolling latest-master release
-        if: env.RELEASE_KIND == 'rolling'
+      - name: Publish per-commit master release
+        if: env.RELEASE_KIND == 'master'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: latest-master
-          name: Latest master build
+          tag_name: ${{ env.MASTER_TAG }}
+          name: Build ${{ env.SHORT_SHA }}
           body: |
-            Built from `master` at commit `${{ github.sha }}`. Replaced on
-            every push to `master`.
+            Built from `master` at commit
+            [`${{ env.SHORT_SHA }}`](https://github.com/${{ github.repository }}/commit/${{ github.sha }}).
 
             One zip per OS × config × link-type variant; each zip contains the
             public headers under `include/` and the built library under `lib/`.
