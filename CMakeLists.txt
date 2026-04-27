@@ -31,10 +31,15 @@ option(BYTEBINDER_BUILD_TESTS  "Build the Catch2 test runner"
        ${PROJECT_IS_TOP_LEVEL})
 option(BYTEBINDER_ENABLE_SANITIZERS "Enable AddressSanitizer + UBSan in Debug builds" OFF)
 
-set(POLYHOOK_BUILD_STATIC_RUNTIME ON CACHE BOOL "")
+# Use the dynamic CRT on MSVC (/MD[d]) so EXE + libbytebinder.dll share one
+# heap and STL allocator. With the static CRT (/MT[d]) each module has its own,
+# which corrupts or hangs any std::string/vector/shared_ptr that crosses the
+# DLL boundary (e.g. mem::scan, process::current, mem::disasm). PolyHook is
+# pinned to the same runtime for the same reason.
+set(POLYHOOK_BUILD_STATIC_RUNTIME OFF CACHE BOOL "")
 
 if(MSVC)
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 endif()
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/deps/polyhook)
