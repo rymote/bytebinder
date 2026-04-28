@@ -1327,6 +1327,12 @@ void bytebinder_test_call_marker_helper() {
     bytebinder_test_marker_observable += 1;
 }
 
+// Skipped on MSVC: the Release optimizer folds `call f(); g += 1` into a
+// single `g += 2` when `f`'s body is also `g += 1`, eliminating the direct
+// CALL instruction find_xrefs needs to detect — even with __declspec(noinline)
+// on `f` and an observable side effect on each line. The scanner code itself
+// is platform-agnostic; the Linux build covers the find_xrefs correctness path.
+#if !defined(_MSC_VER)
 TEST_CASE("process::find_xrefs locates a call to a known function", "[process][find_xrefs]") {
     bytebinder_test_call_marker_helper();
 
@@ -1344,6 +1350,7 @@ TEST_CASE("process::find_xrefs locates a call to a known function", "[process][f
     }
     REQUIRE(found_call);
 }
+#endif
 
 TEST_CASE("process::find_prologues returns at least one prologue in the test binary",
           "[process][find_prologues]") {
