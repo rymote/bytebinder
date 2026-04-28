@@ -44,4 +44,5 @@ Makefile
 Thumbs.db
 
 # Generated documentation
-docs/
+docs/*
+!docs/usage/

@@ -18,24 +18,41 @@
 
 #pragma once
 
-#include "bb_pch.h"
-#include "bb_memory_exceptions.h"
-#include "bb_scoped_unlock.h"
-#include "bb_mem.h"
-#include "bb_pattern.h"
-#include "bb_init_system.h"
-#include "bb_memory_accessor.h"
-#include "bb_local_accessor.h"
-#include "bb_remote_accessor.h"
-#include "bb_process.h"
-#include "bb_typed_scan.h"
-#include "bb_code_scan.h"
-#include "bb_heuristics.h"
-#include "bb_dump.h"
-#include "bb_disasm.h"
-#include "bb_symbols.h"
-#include "bb_vmt.h"
-#include "bb_log_sink.h"
-#include "bb_version.h"
+#include "bb_api.h"
 
-namespace bb = bytebinder;
+#if defined(_WIN32)
+    #define NOMINMAX
+    #include <windows.h>
+    #include <psapi.h>
+#else
+    #include <sys/mman.h>
+    #include <unistd.h>
+    #include <fcntl.h>
+    #include <dlfcn.h>
+    #include <link.h>
+    #include <elf.h>
+    #include <signal.h>
+#endif
+
+#include <exception>
+#include <string>
+#include <cstdint>
+#include <cstddef>
+#include <cstring>
+#include <limits>
+#include <iostream>
+#include <vector>
+#include <memory>
+#include <algorithm>
+#include <functional>
+#include <iomanip>
+#include <thread>
+#include <chrono>
+#include <unordered_map>
+#include <atomic>
+#include <mutex>
+#include <cstdio>
+#include <utility>
+#include <optional>
+#include <string_view>
+#include <span>

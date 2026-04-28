@@ -30,6 +30,7 @@ option(BYTEBINDER_BUILD_SHARED "Build the shared library target" ON)
 option(BYTEBINDER_BUILD_TESTS  "Build the Catch2 test runner"
        ${PROJECT_IS_TOP_LEVEL})
 option(BYTEBINDER_ENABLE_SANITIZERS "Enable AddressSanitizer + UBSan in Debug builds" OFF)
+option(BYTEBINDER_BUILD_USAGE_EXAMPLES "Compile docs/usage/*.cpp as smoke targets" OFF)
 
 # Use the dynamic CRT on MSVC (/MD[d]) so EXE + libbytebinder.dll share one
 # heap and STL allocator. With the static CRT (/MT[d]) each module has its own,
@@ -51,39 +52,46 @@ if(NOT MSVC)
 endif()
 
 set(BYTEBINDER_PUBLIC_HEADERS
+    include/bb_api.h
+    include/bb_code_scan.h
+    include/bb_disasm.h
+    include/bb_dump.h
+    include/bb_heuristics.h
+    include/bb_init_system.h
+    include/bb_local_accessor.h
+    include/bb_log_sink.h
+    include/bb_macros.h
+    include/bb_mem.h
+    include/bb_memory_accessor.h
+    include/bb_memory_exceptions.h
+    include/bb_pattern.h
+    include/bb_pch.h
     include/bb_process.h
+    include/bb_remote_accessor.h
+    include/bb_scoped_unlock.h
+    include/bb_symbols.h
+    include/bb_typed_scan.h
+    include/bb_version.h
+    include/bb_vmt.h
     include/bytebinder.h
-    include/bytebinder_api.h
-    include/bytebinder_version.h
-    include/disasm.h
-    include/init_system.h
-    include/local_accessor.h
-    include/log_sink.h
-    include/macros.h
-    include/mem.h
-    include/memory_accessor.h
-    include/memory_exceptions.h
-    include/pattern.h
-    include/pch.h
-    include/remote_accessor.h
-    include/scoped_unlock.h
-    include/symbols.h
-    include/vmt.h
 )
 
 set(BYTEBINDER_SOURCES
-    src/disasm.cpp
-    src/local_accessor.cpp
-    src/log_sink.cpp
-    src/mem.cpp
-    src/memory_exceptions.cpp
-    src/pattern.cpp
+    src/bb_code_scan.cpp
+    src/bb_disasm.cpp
+    src/bb_dump.cpp
+    src/bb_heuristics.cpp
+    src/bb_local_accessor.cpp
+    src/bb_log_sink.cpp
+    src/bb_mem.cpp
+    src/bb_memory_exceptions.cpp
+    src/bb_pattern.cpp
+    src/bb_remote_accessor.cpp
+    src/bb_scoped_unlock.cpp
+    src/bb_symbols.cpp
+    src/bb_version.cpp
+    src/bb_vmt.cpp
     src/process.cpp
-    src/remote_accessor.cpp
-    src/scoped_unlock.cpp
-    src/symbols.cpp
-    src/version.cpp
-    src/vmt.cpp
 )
 
 add_library(bytebinder-objects OBJECT
@@ -105,7 +113,7 @@ target_link_libraries(bytebinder-objects PUBLIC PolyHook_2)
 if(WIN32)
     target_link_libraries(bytebinder-objects PUBLIC dbghelp)
 endif()
-target_precompile_headers(bytebinder-objects PUBLIC include/pch.h)
+target_precompile_headers(bytebinder-objects PUBLIC include/bb_pch.h)
 
 target_compile_definitions(bytebinder-objects PRIVATE
     BYTEBINDER_VERSION_STRING="${PROJECT_VERSION}")
@@ -203,4 +211,8 @@ if(BYTEBINDER_BUILD_TESTS)
     include(CTest)
     include(Catch)
     catch_discover_tests(bytebinder-tests)
+endif()
+
+if(BYTEBINDER_BUILD_USAGE_EXAMPLES)
+    add_subdirectory(docs/usage)
 endif()

@@ -1086,3 +1086,329 @@ TEST_CASE("process::module_sections returns at least one allocatable section",
     }
     REQUIRE(found_any);
 }
+
+namespace {
+    alignas(16) volatile unsigned char find_bytes_haystack[1024] = {};
+    alignas(16) volatile unsigned char find_bytes_all_haystack[1024] = {};
+
+    void write_haystack_bytes(volatile unsigned char* destination,
+                                const unsigned char* source,
+                                size_t length) {
+        for (size_t index = 0; index < length; ++index) {
+            destination[index] = source[index];
+        }
+    }
+}
+
+// Scan-family tests crash under AddressSanitizer because the chunked memcpy
+// inside pattern::scan / typed_scan reads in 64 KiB strides, which crosses
+// ASan's per-global redzones in the test binary's .data/.rdata. The non-ASan
+// build covers correctness; under ASan we skip these to avoid false positives.
+#if !defined(__SANITIZE_ADDRESS__) && !(defined(__has_feature) && __has_feature(address_sanitizer))
+TEST_CASE("process::find_bytes locates exact byte sequence", "[process][find_bytes]") {
+    volatile unsigned char xor_key = 0x5A;
+    unsigned char needle[12];
+    const unsigned char obfuscated[12] = {
+        static_cast<unsigned char>(0x13 ^ 0x5A), static_cast<unsigned char>(0x37 ^ 0x5A),
+        static_cast<unsigned char>(0xC0 ^ 0x5A), static_cast<unsigned char>(0xDE ^ 0x5A),
+        static_cast<unsigned char>(0xBA ^ 0x5A), static_cast<unsigned char>(0xBE ^ 0x5A),
+        static_cast<unsigned char>(0xFA ^ 0x5A), static_cast<unsigned char>(0xCE ^ 0x5A),
+        static_cast<unsigned char>(0x71 ^ 0x5A), static_cast<unsigned char>(0xA5 ^ 0x5A),
+        static_cast<unsigned char>(0x6D ^ 0x5A), static_cast<unsigned char>(0xE3 ^ 0x5A),
+    };
+    for (size_t index = 0; index < sizeof(needle); ++index) {
+        needle[index] = static_cast<unsigned char>(obfuscated[index] ^ xor_key);
+    }
+    write_haystack_bytes(find_bytes_haystack + 200, needle, sizeof(needle));
+
+    auto current_process = bb::process::current();
+    const auto self_modules = current_process.modules();
+    REQUIRE_FALSE(self_modules.empty());
+    bb::mem hit = current_process.find_bytes({needle, sizeof(needle)},
+                                              self_modules.front().name);
+    REQUIRE(hit.address == reinterpret_cast<uintptr_t>(&find_bytes_haystack[200]));
+}
+
+TEST_CASE("process::find_bytes_all returns every occurrence", "[process][find_bytes]") {
+    volatile unsigned char xor_key = 0xA5;
+    unsigned char needle[12];
+    const unsigned char obfuscated[12] = {
+        static_cast<unsigned char>(0xAB ^ 0xA5), static_cast<unsigned char>(0xCD ^ 0xA5),
+        static_cast<unsigned char>(0xEF ^ 0xA5), static_cast<unsigned char>(0x01 ^ 0xA5),
+        static_cast<unsigned char>(0x23 ^ 0xA5), static_cast<unsigned char>(0x45 ^ 0xA5),
+        static_cast<unsigned char>(0x67 ^ 0xA5), static_cast<unsigned char>(0x89 ^ 0xA5),
+        static_cast<unsigned char>(0x4F ^ 0xA5), static_cast<unsigned char>(0x12 ^ 0xA5),
+        static_cast<unsigned char>(0x9C ^ 0xA5), static_cast<unsigned char>(0x3B ^ 0xA5),
+    };
+    for (size_t index = 0; index < sizeof(needle); ++index) {
+        needle[index] = static_cast<unsigned char>(obfuscated[index] ^ xor_key);
+    }
+    write_haystack_bytes(find_bytes_all_haystack + 100, needle, sizeof(needle));
+    write_haystack_bytes(find_bytes_all_haystack + 500, needle, sizeof(needle));
+    write_haystack_bytes(find_bytes_all_haystack + 900, needle, sizeof(needle));
+
+    auto current_process = bb::process::current();
+    const auto self_modules = current_process.modules();
+    REQUIRE_FALSE(self_modules.empty());
+    auto result = current_process.find_bytes_all({needle, sizeof(needle)},
+                                                   self_modules.front().name);
+    REQUIRE(result.matches.size() >= 3);
+}
+
+namespace {
+    volatile int32_t bytebinder_scan_value_buffer[1024] = {};
+    volatile unsigned char bytebinder_scan_alignment_buffer[1024] = {};
+}
+
+TEST_CASE("process::scan_value finds an exact int32_t", "[process][scan_value]") {
+    bytebinder_scan_value_buffer[300] = 0xDEADBEEF;
+
+    auto current_process = bb::process::current();
+    const auto self_modules = current_process.modules();
+    REQUIRE_FALSE(self_modules.empty());
+
+    auto result = current_process.scan_value<int32_t>(
+        static_cast<int32_t>(0xDEADBEEF),
+        self_modules.front().name);
+
+    bool found_at_buffer = false;
+    for (uintptr_t address : result.matches) {
+        if (address == reinterpret_cast<uintptr_t>(&bytebinder_scan_value_buffer[300])) {
+            found_at_buffer = true;
+            break;
+        }
+    }
+    REQUIRE(found_at_buffer);
+}
+
+TEST_CASE("process::scan_value honors alignment", "[process][scan_value]") {
+    // Place the int32 value 0xCAFEBABE at offset 5 (deliberately misaligned).
+    int32_t marker = static_cast<int32_t>(0xCAFEBABE);
+    for (size_t byte_index = 0; byte_index < sizeof(marker); ++byte_index) {
+        const_cast<volatile unsigned char*>(bytebinder_scan_alignment_buffer)[5 + byte_index] =
+            reinterpret_cast<const unsigned char*>(&marker)[byte_index];
+    }
+
+    auto current_process = bb::process::current();
+    const auto self_modules = current_process.modules();
+    REQUIRE_FALSE(self_modules.empty());
+
+    // Default alignment (4 for int32) should NOT find it at offset 5.
+    auto aligned = current_process.scan_value<int32_t>(
+        static_cast<int32_t>(0xCAFEBABE),
+        self_modules.front().name);
+    bool found_aligned = false;
+    for (uintptr_t address : aligned.matches) {
+        if (address == reinterpret_cast<uintptr_t>(
+                &bytebinder_scan_alignment_buffer[5])) {
+            found_aligned = true;
+            break;
+        }
+    }
+    REQUIRE_FALSE(found_aligned);
+
+    // Alignment 1 should find it.
+    auto unaligned = current_process.scan_value<int32_t>(
+        static_cast<int32_t>(0xCAFEBABE),
+        self_modules.front().name, 1);
+    bool found_unaligned = false;
+    for (uintptr_t address : unaligned.matches) {
+        if (address == reinterpret_cast<uintptr_t>(
+                &bytebinder_scan_alignment_buffer[5])) {
+            found_unaligned = true;
+            break;
+        }
+    }
+    REQUIRE(found_unaligned);
+}
+
+namespace {
+    volatile float bytebinder_scan_range_buffer[1024] = {};
+}
+
+TEST_CASE("process::scan_value_in_range finds float within epsilon", "[process][scan_value]") {
+    bytebinder_scan_range_buffer[42] = 1.5f;
+    bytebinder_scan_range_buffer[200] = 1.500001f;
+    bytebinder_scan_range_buffer[800] = 2.0f;
+
+    auto current_process = bb::process::current();
+    const auto self_modules = current_process.modules();
+    REQUIRE_FALSE(self_modules.empty());
+
+    auto result = current_process.scan_value_in_range<float>(
+        1.49f, 1.51f, self_modules.front().name);
+
+    bool found_42 = false, found_200 = false, found_800 = false;
+    for (uintptr_t address : result.matches) {
+        if (address == reinterpret_cast<uintptr_t>(&bytebinder_scan_range_buffer[42])) found_42 = true;
+        if (address == reinterpret_cast<uintptr_t>(&bytebinder_scan_range_buffer[200])) found_200 = true;
+        if (address == reinterpret_cast<uintptr_t>(&bytebinder_scan_range_buffer[800])) found_800 = true;
+    }
+    REQUIRE(found_42);
+    REQUIRE(found_200);
+    REQUIRE_FALSE(found_800);
+}
+
+namespace {
+    volatile uint32_t bytebinder_scan_mask_buffer[1024] = {};
+}
+
+TEST_CASE("process::scan_value_with_mask matches low byte only", "[process][scan_value]") {
+    bytebinder_scan_mask_buffer[10] = 0xAABBCC42;
+    bytebinder_scan_mask_buffer[20] = 0x11223342;
+    bytebinder_scan_mask_buffer[30] = 0xAABBCC43;
+
+    auto current_process = bb::process::current();
+    const auto self_modules = current_process.modules();
+    REQUIRE_FALSE(self_modules.empty());
+
+    auto result = current_process.scan_value_with_mask<uint32_t>(
+        0x42u, 0xFFu, self_modules.front().name);
+
+    bool found_10 = false, found_20 = false, found_30 = false;
+    for (uintptr_t address : result.matches) {
+        if (address == reinterpret_cast<uintptr_t>(&bytebinder_scan_mask_buffer[10])) found_10 = true;
+        if (address == reinterpret_cast<uintptr_t>(&bytebinder_scan_mask_buffer[20])) found_20 = true;
+        if (address == reinterpret_cast<uintptr_t>(&bytebinder_scan_mask_buffer[30])) found_30 = true;
+    }
+    REQUIRE(found_10);
+    REQUIRE(found_20);
+    REQUIRE_FALSE(found_30);
+}
+#endif // !__SANITIZE_ADDRESS__ (scan-family tests)
+
+TEST_CASE("resolve_rip_relative returns expected address", "[disasm]") {
+    REQUIRE(bb::resolve_rip_relative(0x100, 7, 0x10) == 0x117);
+    REQUIRE(bb::resolve_rip_relative(0x1000, 5, -16) == 0xFF5);
+}
+
+#if defined(__GNUC__) && !defined(__clang__)
+__attribute__((noinline, noipa, optimize("O0")))
+#elif defined(__clang__)
+__attribute__((noinline, optnone))
+#elif defined(_MSC_VER)
+__declspec(noinline)
+#endif
+void bytebinder_test_call_marker_helper() {
+    // Emit a direct CALL to bytebinder_test_marker_function via inline asm so
+    // the compiler can't elide it after observing that the callee is empty.
+    // This is what the find_xrefs scanner is designed to detect.
+#if defined(__GNUC__) || defined(__clang__)
+    asm volatile("call bytebinder_test_marker_function" ::: "memory");
+#else
+    bytebinder_test_marker_function();
+#endif
+}
+
+TEST_CASE("process::find_xrefs locates a call to a known function", "[process][find_xrefs]") {
+    bytebinder_test_call_marker_helper();
+
+    auto current_process = bb::process::current();
+    auto xrefs = current_process.find_xrefs(
+        reinterpret_cast<uintptr_t>(&bytebinder_test_marker_function),
+        std::nullopt, 0);
+
+    bool found_call = false;
+    for (const auto& entry : xrefs) {
+        if (entry.kind == bb::xref_kind::call) {
+            found_call = true;
+            break;
+        }
+    }
+    REQUIRE(found_call);
+}
+
+TEST_CASE("process::find_prologues returns at least one prologue in the test binary",
+          "[process][find_prologues]") {
+    auto current_process = bb::process::current();
+    const auto modules = current_process.modules();
+    REQUIRE_FALSE(modules.empty());
+    auto prologues = current_process.find_prologues(modules.front().name, 100);
+    REQUIRE_FALSE(prologues.empty());
+}
+
+TEST_CASE("process::find_instruction_pattern matches a simple template",
+          "[process][find_instruction_pattern]") {
+    auto current_process = bb::process::current();
+    std::vector<bb::instruction_pattern_element> pattern;
+    pattern.push_back({"push", std::nullopt});
+    pattern.push_back({"mov", 2});
+    pattern.push_back({"", std::nullopt});
+    auto matches = current_process.find_instruction_pattern(
+        std::span<const bb::instruction_pattern_element>{pattern}, std::nullopt, 100);
+    REQUIRE_FALSE(matches.empty());
+}
+
+// Heuristic + dump tests also crash under ASan: find_vtables and
+// find_string_tables read whole regions in one go, dump_memory copies in 1 MiB
+// chunks. All cross global redzones in the test binary's data segments.
+#if !defined(__SANITIZE_ADDRESS__) && !(defined(__has_feature) && __has_feature(address_sanitizer))
+TEST_CASE("process::find_vtables returns plausible candidates", "[process][find_vtables]") {
+    auto current_process = bb::process::current();
+    auto candidates = current_process.find_vtables(std::nullopt, 3, 100);
+    if (!candidates.empty()) {
+        const auto exec_regions = current_process.regions(bb::protection::execute);
+        for (const auto& candidate : candidates) {
+            for (uintptr_t entry : candidate.entries) {
+                bool inside_executable = false;
+                for (const auto& region : exec_regions) {
+                    if (entry >= region.base && entry < region.base + region.size) {
+                        inside_executable = true;
+                        break;
+                    }
+                }
+                REQUIRE(inside_executable);
+            }
+        }
+    }
+    SUCCEED("find_vtables ran without crashing");
+}
+
+namespace {
+    volatile char bytebinder_string_table_synthetic[] =
+        "AAAAAAAAAAAAAAAAAAAAAAAAAA\0BBBBBBBBBBBBBBBBBBBBBBBBBB\0CCCCCCCCCCCCCCCCCCCCCCCCCC\0";
+}
+
+TEST_CASE("process::find_string_tables locates a synthetic string run",
+          "[process][find_string_tables]") {
+    auto current_process = bb::process::current();
+    const auto self_modules = current_process.modules();
+    REQUIRE_FALSE(self_modules.empty());
+
+    auto runs = current_process.find_string_tables(
+        self_modules.front().name, 16, 10000);
+    bool found_run = false;
+    for (const auto& run : runs) {
+        if (run.base == reinterpret_cast<uintptr_t>(
+                const_cast<const char*>(bytebinder_string_table_synthetic))) {
+            REQUIRE(run.string_count >= 3);
+            found_run = true;
+            break;
+        }
+    }
+    REQUIRE(found_run);
+}
+
+TEST_CASE("process::dump_memory writes regions and a manifest", "[process][dump]") {
+    namespace fs = std::filesystem;
+    fs::path tmp_dir = fs::temp_directory_path() / "bytebinder_dump_test";
+    fs::remove_all(tmp_dir);
+
+    auto current_process = bb::process::current();
+    bb::memory_dump_options options;
+    options.include_executable = false;
+    options.include_writable_data = false;
+    options.include_readonly_data = true;
+    options.include_anonymous_mappings = false;
+    options.min_region_size = 4096;
+    options.max_region_size = 1024 * 1024;
+
+    auto result = current_process.dump_memory(tmp_dir, options);
+
+    REQUIRE(result.regions_dumped > 0);
+    REQUIRE(fs::exists(result.manifest_path));
+    REQUIRE(fs::file_size(result.manifest_path) > 0);
+
+    fs::remove_all(tmp_dir);
+}
+#endif // !__SANITIZE_ADDRESS__ (heuristic + dump tests)

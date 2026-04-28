@@ -16,26 +16,17 @@
  * of, or in connection with the software or the use or other dealings in the software.
  */
 
-#pragma once
-
-#include "bb_pch.h"
 #include "bb_memory_exceptions.h"
-#include "bb_scoped_unlock.h"
-#include "bb_mem.h"
-#include "bb_pattern.h"
-#include "bb_init_system.h"
-#include "bb_memory_accessor.h"
-#include "bb_local_accessor.h"
-#include "bb_remote_accessor.h"
-#include "bb_process.h"
-#include "bb_typed_scan.h"
-#include "bb_code_scan.h"
-#include "bb_heuristics.h"
-#include "bb_dump.h"
-#include "bb_disasm.h"
-#include "bb_symbols.h"
-#include "bb_vmt.h"
-#include "bb_log_sink.h"
-#include "bb_version.h"
 
-namespace bb = bytebinder;
+namespace bytebinder {
+    memory_operation_exception::memory_operation_exception(const std::string &message, memory_error_code errorCode)
+            : message(message), errorCode(errorCode) {}
+
+    const char *memory_operation_exception::what() const noexcept {
+        return message.c_str();
+    }
+
+    memory_error_code memory_operation_exception::get_error_code() const noexcept {
+        return errorCode;
+    }
+}

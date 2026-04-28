@@ -109,7 +109,9 @@ find_package(bytebinder CONFIG REQUIRED)
 target_link_libraries(my_target PRIVATE bytebinder::shared)  # or bytebinder::static
 ```
 
-## Usage
+## Examples
+
+### Initialization, scan, and hook
 
 ```cpp
 #include <bytebinder/bytebinder.h>
@@ -132,6 +134,138 @@ int main() {
 
     handle.unhook();        // remove this hook
     bb::mem::unhook_all();  // or remove every hook installed via bytebinder
+}
+```
+
+### Reading and writing typed values
+
+```cpp
+#include <bytebinder/bytebinder.h>
+
+int main() {
+    auto current_process = bb::process::current();
+    auto address = current_process.at(reinterpret_cast<uintptr_t>(&some_global));
+    int32_t value = address.read<int32_t>();
+    address.write<int32_t>(value + 1);
+}
+```
+
+### Reading strings across page boundaries
+
+```cpp
+auto target = bb::process::attach(target_pid);
+auto label = target.at(some_address).read_cstring(/*max=*/256);
+if (label.has_value()) std::printf("name: %s\n", label->c_str());
+```
+
+### Multi-match pattern scanning with cancel + progress
+
+```cpp
+std::atomic<bool> cancel_flag{false};
+auto target = bb::process::current();
+auto result = target.scan_all(
+    "DE AD BE EF",
+    /*module=*/std::nullopt,
+    /*max=*/0,
+    &cancel_flag,
+    [](const bb::pattern::scan_progress& progress) {
+        std::printf("progress: %zu / %zu bytes, %zu hits\n",
+                    progress.bytes_scanned, progress.bytes_total,
+                    progress.matches_so_far);
+    });
+std::printf("found %zu matches\n", result.matches.size());
+```
+
+### Plain byte-array scan
+
+```cpp
+const uint8_t needle[] = {0x55, 0x48, 0x89, 0xE5};
+auto hit = bb::process::current().find_bytes({needle, sizeof(needle)});
+if (hit.valid()) std::printf("hit at 0x%lx\n", hit.address);
+```
+
+### Typed value scans
+
+```cpp
+auto target = bb::process::attach(target_pid);
+
+// Find every int32 == 42.
+auto exact_hits = target.scan_value<int32_t>(42);
+
+// Float epsilon match.
+auto nearly_one_point_five = target.scan_value_in_range<float>(1.49f, 1.51f);
+
+// Bitmask: low byte == 0x80.
+auto low_byte_eight_zero = target.scan_value_with_mask<uint32_t>(0x80, 0xFF);
+```
+
+### Finding cross-references to a function
+
+```cpp
+auto target = bb::process::current();
+auto target_address = reinterpret_cast<uintptr_t>(&suspicious_function);
+auto xrefs = target.find_xrefs(target_address);
+for (const auto& reference : xrefs) {
+    std::printf("xref: 0x%lx (kind=%d)\n",
+                reference.instruction_address, static_cast<int>(reference.kind));
+}
+```
+
+### Discovering function entry points by prologue heuristic
+
+```cpp
+auto target = bb::process::current();
+auto modules = target.modules();
+auto prologues = target.find_prologues(modules.front().name, /*max=*/100);
+for (uintptr_t entry : prologues) {
+    std::printf("prologue at 0x%lx\n", entry);
+}
+```
+
+### Locating vtables and string tables
+
+```cpp
+auto target = bb::process::current();
+auto vtables = target.find_vtables(/*module=*/std::nullopt, /*min_entries=*/4);
+for (const auto& candidate : vtables) {
+    std::printf("vtable at 0x%lx with %zu entries\n",
+                candidate.address, candidate.entries.size());
+}
+
+auto strings = target.find_string_tables(std::nullopt, /*min_length=*/24);
+std::printf("found %zu string tables\n", strings.size());
+```
+
+### Snapshotting process memory
+
+```cpp
+bb::memory_dump_options options;
+options.include_anonymous_mappings = true;
+auto result = bb::process::current().dump_memory("./mem-snapshot", options);
+std::printf("dumped %zu regions, %zu bytes total. Manifest: %s\n",
+            result.regions_dumped, result.total_bytes_written,
+            result.manifest_path.string().c_str());
+```
+
+### Capturing diagnostic logs
+
+```cpp
+bb::set_log_sink([](bb::log_level level, std::string_view message) {
+    std::fprintf(stderr, "[bytebinder %d] %.*s\n",
+                 static_cast<int>(level), int(message.size()), message.data());
+});
+```
+
+### Resolving multiple symbols at once
+
+```cpp
+std::array<std::string_view, 3> needed{"memcpy", "memmove", "memset"};
+auto results = bb::process::current().resolve_symbols(needed);
+for (size_t index = 0; index < needed.size(); ++index) {
+    if (results[index].has_value()) {
+        std::printf("%-10s -> 0x%lx\n",
+                    std::string(needed[index]).c_str(), results[index]->address);
+    }
 }
 ```
 

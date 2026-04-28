@@ -7,9 +7,12 @@
 
 #pragma once
 
-#include "memory_accessor.h"
-#include "pattern.h"
-#include "symbols.h"
+#include "bb_code_scan.h"
+#include "bb_dump.h"
+#include "bb_heuristics.h"
+#include "bb_memory_accessor.h"
+#include "bb_pattern.h"
+#include "bb_symbols.h"
 
 #include <atomic>
 #include <functional>
@@ -38,18 +41,41 @@ namespace bytebinder {
      *  - process is copyable and the copies share the same memory_accessor;
      *    concurrent use across copies is equivalent to concurrent use on one
      *    instance.
+     *
+     * Example:
+     * @code
+     * auto target = bb::process::attach(pid);
+     * uint8_t needle[] = {0x48, 0x89, 0x5C, 0x24};
+     * if (auto hit = target.find_bytes({needle, sizeof(needle)}); hit.valid()) {
+     *     auto value = hit.read<uint32_t>();
+     * }
+     * @endcode
+     *
+     * @note On Windows, symbol resolution and remote-process protection changes
+     *       depend on DbgHelp + PDBs and admin privileges respectively. On
+     *       Linux, remote protection changes require ptrace.
      */
     class BYTEBINDER_API process {
     public:
+        /// @brief Returns a process bound to the calling (in-process) program.
         static process current();
+        /// @brief Returns a process bound to a remote PID via the platform's
+        ///        out-of-process accessor.
         static process attach(uint32_t target_process_id);
 
+        /// @brief Default-constructs a detached process with no backing accessor.
         process() = default;
+        /// @brief Constructs a process around an explicit accessor (e.g. a custom
+        ///        subclass for tests or sandboxes).
         explicit process(std::shared_ptr<memory_accessor> accessor);
 
+        /// @brief Returns a reference to the bound memory_accessor.
         [[nodiscard]] memory_accessor& accessor() const noexcept { return *accessor_impl; }
+        /// @brief Returns a shared_ptr to the bound memory_accessor for ownership-sharing.
         [[nodiscard]] std::shared_ptr<memory_accessor> accessor_shared() const noexcept { return accessor_impl; }
+        /// @brief Returns true if the bound accessor is the in-process accessor.
         [[nodiscard]] bool is_local() const noexcept;
+        /// @brief Returns the bound process id, or nullopt for in-process targets.
         [[nodiscard]] std::optional<uint32_t> id() const noexcept;
 
         /**
@@ -62,7 +88,9 @@ namespace bytebinder {
          */
         [[nodiscard]] bool alive() const noexcept;
 
+        /// @brief Returns a mem handle bound to this process at @p address.
         [[nodiscard]] mem at(uintptr_t address) const;
+        /// @brief Enumerates every mapped region in the bound process.
         [[nodiscard]] std::vector<region_info> regions() const;
 
         /**
@@ -86,9 +114,12 @@ namespace bytebinder {
         /// Same as is_readable but checks protection::write.
         [[nodiscard]] bool is_writable(uintptr_t address, size_t length = 0) const;
 
+        /// @brief Enumerates every loaded module in the bound process.
         [[nodiscard]] std::vector<module_info> modules() const;
+        /// @brief Returns the module whose basename matches @p name, or nullopt.
         [[nodiscard]] std::optional<module_info> find_module(std::string_view name) const;
 
+        /// @brief One section of a loaded module (".text", ".rdata", etc).
         struct BYTEBINDER_API module_section {
             std::string name;       // ".text", ".rdata", ".data", etc
             uintptr_t base = 0;     // VA in the target process
@@ -115,6 +146,8 @@ namespace bytebinder {
         [[nodiscard]] mem scan(std::string_view ida_pattern,
                                 std::optional<std::string_view> module_name = std::nullopt) const;
 
+        /// @brief Aggregate result of a multi-match scan: hit addresses plus
+        ///        per-call statistics for diagnostics.
         struct BYTEBINDER_API scan_result {
             std::vector<uintptr_t> matches;
             size_t regions_scanned = 0;
@@ -131,11 +164,105 @@ namespace bytebinder {
                                             std::optional<std::string_view> module_name = std::nullopt,
                                             size_t max_results = 10000) const;
 
+        /**
+         * @brief Variant of scan_all with cooperative cancellation and a
+         *        progress callback.
+         * @param cancel Optional flag polled between regions; nullable.
+         * @param on_progress Optional progress callback invoked per 64 KiB
+         *                    window; nullable.
+         */
         [[nodiscard]] scan_result scan_all(std::string_view ida_pattern,
                                             std::optional<std::string_view> module_name,
                                             size_t max_results,
                                             const std::atomic<bool>* cancel,
                                             const std::function<void(const pattern::scan_progress&)>& on_progress) const;
+
+        /**
+         * @brief Convenience scan for an exact byte sequence (no wildcards).
+         *        Internally constructs an IDA pattern with all match-bytes
+         *        and defers to scan().
+         */
+        [[nodiscard]] mem find_bytes(std::span<const uint8_t> needle,
+                                       std::optional<std::string_view> module_name = std::nullopt) const;
+
+        /**
+         * @brief Multi-match variant of find_bytes.
+         */
+        [[nodiscard]] scan_result find_bytes_all(std::span<const uint8_t> needle,
+                                                   std::optional<std::string_view> module_name = std::nullopt,
+                                                   size_t max_results = 10000) const;
+
+        /**
+         * @brief Iterates every executable region (or only @p module_name if
+         *        provided), decodes instructions with Zydis, and returns each
+         *        instruction whose computed target equals @p target_address.
+         *        Recognized kinds: direct CALL/JMP/Jcc, RIP-relative LEA, and
+         *        RIP-relative MOV (load vs store inferred from operand 0).
+         *        @p max_results = 0 means unlimited.
+         */
+        [[nodiscard]] std::vector<xref> find_xrefs(
+            uintptr_t target_address,
+            std::optional<std::string_view> module_name = std::nullopt,
+            size_t max_results = 10000) const;
+
+        /**
+         * @brief Heuristic function-prologue scanner. Returns addresses where
+         *        @p module_name's executable regions begin a recognized x86_64
+         *        prologue: `endbr64`, `push rbp; mov rbp, rsp`, or
+         *        `sub rsp, imm` (frame-pointer-omitted leaves).
+         *        @p max_results = 0 means unlimited.
+         */
+        [[nodiscard]] std::vector<uintptr_t> find_prologues(
+            std::string_view module_name,
+            size_t max_results = 100000) const;
+
+        /**
+         * @brief Sliding-window instruction-template scanner. Each element of
+         *        @p pattern matches an instruction whose mnemonic equals
+         *        @c mnemonic (case-insensitive; empty string is a wildcard) and
+         *        whose visible operand count equals @c operand_count when set.
+         *        Returns addresses of the first instruction in each successful
+         *        match. @p max_results = 0 means unlimited.
+         */
+        [[nodiscard]] std::vector<uintptr_t> find_instruction_pattern(
+            std::span<const instruction_pattern_element> pattern,
+            std::optional<std::string_view> module_name = std::nullopt,
+            size_t max_results = 10000) const;
+
+        /**
+         * @brief Heuristic vtable scanner. Walks every readable, non-executable
+         *        region (or the intersection with @p module_name's range), and
+         *        reports any pointer-aligned run of @p min_entries or more
+         *        consecutive pointers that all resolve into an executable
+         *        region. @p max_results = 0 means unlimited.
+         */
+        [[nodiscard]] std::vector<vtable_candidate> find_vtables(
+            std::optional<std::string_view> module_name = std::nullopt,
+            size_t min_entries = 3,
+            size_t max_results = 10000) const;
+
+        /**
+         * @brief Heuristic string-table scanner. Returns runs of two or more
+         *        adjacent NUL-terminated printable-ASCII strings, where each
+         *        string is at least @p min_string_length bytes long. Useful
+         *        for locating localization or message tables.
+         *        @p max_results = 0 means unlimited.
+         */
+        [[nodiscard]] std::vector<string_table_run> find_string_tables(
+            std::optional<std::string_view> module_name = std::nullopt,
+            size_t min_string_length = 16,
+            size_t max_results = 10000) const;
+
+        /**
+         * @brief Snapshots every readable region matching @p options to disk:
+         *        one binary file per region plus a JSON manifest. The manifest
+         *        is written LAST, so partial dumps still leave recoverable
+         *        per-region files. Non-readable regions (e.g. `[vsyscall]`) are
+         *        always skipped.
+         */
+        [[nodiscard]] memory_dump_result dump_memory(
+            std::filesystem::path output_directory,
+            const memory_dump_options& options = {}) const;
 
         /**
          * @brief Resolves a named symbol (function or data) to its runtime
@@ -163,6 +290,45 @@ namespace bytebinder {
          *        contains @p address, or nullopt if none found.
          */
         [[nodiscard]] std::optional<symbolize_result> symbolize(uintptr_t address) const;
+
+        /**
+         * @brief Scans for an exact value of type T at @p alignment-byte stride.
+         *        Default alignment is sizeof(T) (natural alignment).
+         *        Bitwise comparison: scan_value<float>(NaN) matches nothing.
+         */
+        template<typename ValueType>
+        [[nodiscard]] scan_result scan_value(
+            ValueType expected,
+            std::optional<std::string_view> module_name = std::nullopt,
+            size_t alignment = sizeof(ValueType),
+            size_t max_results = 10000) const;
+
+        /**
+         * @brief Scans for values in [inclusive_low, inclusive_high] using
+         *        operator<= comparisons. For floats this covers epsilon
+         *        matching: scan_value_in_range(1.49f, 1.51f). Requires
+         *        ValueType to support operator<=.
+         */
+        template<typename ValueType>
+        [[nodiscard]] scan_result scan_value_in_range(
+            ValueType inclusive_low,
+            ValueType inclusive_high,
+            std::optional<std::string_view> module_name = std::nullopt,
+            size_t alignment = sizeof(ValueType),
+            size_t max_results = 10000) const;
+
+        /**
+         * @brief Bitmask scan: address matches iff
+         *        (read_value & mask) == (expected & mask).
+         *        ValueType must support operator& and operator==.
+         */
+        template<typename ValueType>
+        [[nodiscard]] scan_result scan_value_with_mask(
+            ValueType expected,
+            ValueType mask,
+            std::optional<std::string_view> module_name = std::nullopt,
+            size_t alignment = sizeof(ValueType),
+            size_t max_results = 10000) const;
 
     private:
         std::shared_ptr<memory_accessor> accessor_impl;

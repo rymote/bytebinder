@@ -6,11 +6,12 @@
  */
 
 #include "bb_process.h"
-#include "local_accessor.h"
-#include "log_sink.h"
-#include "remote_accessor.h"
-#include "mem.h"
-#include "pattern.h"
+#include "bb_code_scan.h"
+#include "bb_local_accessor.h"
+#include "bb_log_sink.h"
+#include "bb_remote_accessor.h"
+#include "bb_mem.h"
+#include "bb_pattern.h"
 
 #include <fstream>
 #include <unordered_map>
@@ -397,5 +398,123 @@ namespace bytebinder {
                                      cancel, on_progress);
         }
         return aggregate;
+    }
+
+    mem process::find_bytes(std::span<const uint8_t> needle,
+                              std::optional<std::string_view> module_name) const {
+        if (!accessor_impl || needle.empty()) {
+            return mem(std::numeric_limits<uintptr_t>::max(), accessor_impl.get());
+        }
+        std::string signature(reinterpret_cast<const char*>(needle.data()), needle.size());
+        std::string mask(needle.size(), 'x');
+        const pattern parsed_pattern(std::move(signature), std::move(mask));
+
+        uintptr_t scan_base = 0;
+        size_t scan_size = std::numeric_limits<size_t>::max();
+        if (module_name.has_value()) {
+            const auto resolved_module = accessor_impl->find_module(*module_name);
+            if (!resolved_module.has_value()) {
+                throw memory_operation_exception(
+                    std::string("Module not found: ") + std::string(*module_name),
+                    memory_error_code::MODULE_INFO_RETRIEVAL_FAILED);
+            }
+            scan_base = resolved_module->base;
+            scan_size = resolved_module->size;
+        }
+
+        const auto candidate_regions =
+            regions_intersected_with(*accessor_impl, scan_base, scan_size);
+        for (const auto& current_region : candidate_regions) {
+            const uintptr_t hit = parsed_pattern.scan(*accessor_impl,
+                                                       current_region.base,
+                                                       current_region.size);
+            if (hit != std::numeric_limits<uintptr_t>::max()) {
+                return mem(hit, accessor_impl.get());
+            }
+        }
+        return mem(std::numeric_limits<uintptr_t>::max(), accessor_impl.get());
+    }
+
+    process::scan_result process::find_bytes_all(std::span<const uint8_t> needle,
+                                                   std::optional<std::string_view> module_name,
+                                                   size_t max_results) const {
+        scan_result aggregate;
+        if (!accessor_impl || needle.empty()) return aggregate;
+        std::string signature(reinterpret_cast<const char*>(needle.data()), needle.size());
+        std::string mask(needle.size(), 'x');
+        const pattern parsed_pattern(std::move(signature), std::move(mask));
+
+        uintptr_t scan_base = 0;
+        size_t scan_size = std::numeric_limits<size_t>::max();
+        if (module_name.has_value()) {
+            const auto resolved_module = accessor_impl->find_module(*module_name);
+            if (!resolved_module.has_value()) {
+                throw memory_operation_exception(
+                    std::string("Module not found: ") + std::string(*module_name),
+                    memory_error_code::MODULE_INFO_RETRIEVAL_FAILED);
+            }
+            scan_base = resolved_module->base;
+            scan_size = resolved_module->size;
+        }
+
+        const auto candidate_regions =
+            regions_intersected_with(*accessor_impl, scan_base, scan_size);
+        for (const auto& current_region : candidate_regions) {
+            ++aggregate.regions_scanned;
+            aggregate.bytes_scanned += current_region.size;
+            const size_t remaining =
+                max_results == 0 ? 0
+                                 : (max_results - aggregate.matches.size());
+            if (max_results != 0 && remaining == 0) break;
+            parsed_pattern.scan_all(*accessor_impl,
+                                     current_region.base, current_region.size,
+                                     remaining,
+                                     [&aggregate, max_results](uintptr_t hit_address) {
+                                         aggregate.matches.push_back(hit_address);
+                                         if (max_results != 0
+                                             && aggregate.matches.size() >= max_results) {
+                                             return false;
+                                         }
+                                         return true;
+                                     });
+        }
+        return aggregate;
+    }
+
+    std::vector<xref> process::find_xrefs(uintptr_t target_address,
+                                            std::optional<std::string_view> module_name,
+                                            size_t max_results) const {
+        return find_xrefs_in_process(*this, target_address, module_name, max_results);
+    }
+
+    std::vector<uintptr_t> process::find_prologues(std::string_view module_name,
+                                                      size_t max_results) const {
+        return find_prologues_in_process(*this, module_name, max_results);
+    }
+
+    std::vector<uintptr_t> process::find_instruction_pattern(
+        std::span<const instruction_pattern_element> pattern,
+        std::optional<std::string_view> module_name,
+        size_t max_results) const {
+        return find_instruction_pattern_in_process(*this, pattern, module_name, max_results);
+    }
+
+    std::vector<vtable_candidate> process::find_vtables(
+        std::optional<std::string_view> module_name,
+        size_t min_entries,
+        size_t max_results) const {
+        return find_vtables_in_process(*this, module_name, min_entries, max_results);
+    }
+
+    std::vector<string_table_run> process::find_string_tables(
+        std::optional<std::string_view> module_name,
+        size_t min_string_length,
+        size_t max_results) const {
+        return find_string_tables_in_process(*this, module_name, min_string_length, max_results);
+    }
+
+    memory_dump_result process::dump_memory(std::filesystem::path output_directory,
+                                              const memory_dump_options& options) const {
+        return dump_memory_for_process(*this, std::move(output_directory), options);
     }
 }
