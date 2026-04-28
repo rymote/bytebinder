@@ -247,6 +247,55 @@ std::printf("dumped %zu regions, %zu bytes total. Manifest: %s\n",
             result.manifest_path.string().c_str());
 ```
 
+### Walking a deep pointer chain
+
+```cpp
+auto target = bb::process::attach(target_pid);
+std::array<bb::chain_step, 4> steps{{
+    {0x20, true},
+    {0xC10, true},
+    {0x78, true},
+    {0x1B0, false},   // leaf field — no deref
+}};
+auto resolution = target.resolve_chain(module_base, steps);
+if (resolution.address.has_value()) {
+    auto value = target.at(*resolution.address).read<uint32_t>();
+} else {
+    std::printf("chain broke at step %zu while reading 0x%lx\n",
+                resolution.failed_at_step, resolution.partial_walk_addr);
+}
+```
+
+### Reading a typed value at the end of a chain
+
+```cpp
+auto target = bb::process::attach(target_pid);
+auto health = target.read_chain<uint32_t>(module_base, steps);
+if (health.has_value()) std::printf("health = %u\n", *health);
+```
+
+### Finding pointers to a known address
+
+```cpp
+auto target = bb::process::attach(target_pid);
+auto holders = target.find_pointers_to(known_struct_address);
+std::printf("%zu writable slots hold a pointer to 0x%lx\n",
+            holders.size(), known_struct_address);
+```
+
+### Watching a chain across leaf reallocation
+
+```cpp
+auto target = bb::process::attach(target_pid);
+auto handle = target.watch_chain(
+    module_base, steps,
+    [](uintptr_t resolved) {
+        std::printf("chain now resolves to 0x%lx\n", resolved);
+    },
+    std::chrono::milliseconds{50});
+// keep handle alive for as long as you want callbacks; ~handle stops the worker.
+```
+
 ### Capturing diagnostic logs
 
 ```cpp
@@ -416,6 +465,7 @@ The full surface is documented inline in `include/`. The summary below is a navi
 | `bb_memory_accessor.h` | `memory_accessor`, `protection` namespace, `region_info`, `module_info` |
 | `bb_local_accessor.h`, `bb_remote_accessor.h` | concrete accessors |
 | `bb_pattern.h` | `pattern`, `parse_ida_pattern`, `pattern::scan_progress` |
+| `bb_pointer_chain.h` | `chain_step`, `chain_resolution`, `process::resolve_chain`, `read_chain`, `find_pointers_to`, `watch_chain` |
 | `bb_typed_scan.h` | `process::scan_value`, `scan_value_in_range`, `scan_value_with_mask` |
 | `bb_code_scan.h` | `xref`, `xref_kind`, `instruction_pattern_element`, `find_xrefs`, `find_prologues`, `find_instruction_pattern` |
 | `bb_heuristics.h` | `vtable_candidate`, `string_table_run`, `find_vtables`, `find_string_tables` |
@@ -453,6 +503,10 @@ Handle to the current process or a remote PID. Owns a `memory_accessor`.
 | `resolve_symbol(name, module={})` | `optional<symbol_info>` | Linux: both, Windows: local | DbgHelp on Windows; ELF .dynsym/.symtab on Linux. |
 | `resolve_symbols(span<name>, module={})` | `vector<optional<symbol_info>>` | same | Single table parse per module. |
 | `symbolize(address)` | `optional<symbolize_result>` | same | Symbol + offset_from_start. |
+| `resolve_chain(base, steps)` | `chain_resolution` | both | Stateless walker. Diagnostics on failure. |
+| `read_chain<T>(base, steps)` | `optional<T>` | both | resolve_chain + typed read. |
+| `find_pointers_to(target, ...)` | `vector<uintptr_t>` | both | Pointer-aligned scan, writable-data default. |
+| `watch_chain(base, steps, on_resolve, interval)` | `watch_handle` | both | Re-walk + cache; fires on changed final addr. |
 
 Thread safety: all const methods are safe to call concurrently from multiple threads on the same `process` instance.
 

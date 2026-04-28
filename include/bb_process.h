@@ -12,14 +12,17 @@
 #include "bb_heuristics.h"
 #include "bb_memory_accessor.h"
 #include "bb_pattern.h"
+#include "bb_pointer_chain.h"
 #include "bb_symbols.h"
 
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace bytebinder {
@@ -265,6 +268,63 @@ namespace bytebinder {
             const memory_dump_options& options = {}) const;
 
         /**
+         * @brief Walk a pointer chain. Each step's offset is added to the
+         *        running address; if the step's `dereference` flag is set,
+         *        the walker reads 8 bytes there and treats them as the next
+         *        address. Empty `steps` returns success with `address = base`.
+         *        On any read failure the returned `chain_resolution` carries
+         *        `failed_at_step`, `failure`, and `partial_walk_addr` for
+         *        diagnostics.
+         *
+         * Example:
+         * @code
+         * std::array<bb::chain_step, 3> steps{{ {0,true}, {0x10,true}, {0x4,false} }};
+         * auto r = process.resolve_chain(base, steps);
+         * if (r.address) std::printf("0x%lx\n", *r.address);
+         * @endcode
+         */
+        [[nodiscard]] chain_resolution resolve_chain(
+            uintptr_t base,
+            std::span<const chain_step> steps) const;
+
+        /**
+         * @brief Resolve the chain and read a typed value at the final
+         *        address. Returns nullopt on chain-walk failure OR if the
+         *        final read short-reads. Caller can re-run resolve_chain
+         *        for diagnostics.
+         */
+        template<typename ValueType>
+        [[nodiscard]] std::optional<ValueType> read_chain(
+            uintptr_t base,
+            std::span<const chain_step> steps) const;
+
+        /**
+         * @brief Locate every pointer-aligned address in the readable regions
+         *        matching the protection mask whose 8 stored bytes equal
+         *        @p target. Defaults to writable, non-executable data, which
+         *        is where chain intermediate pointers live.
+         */
+        [[nodiscard]] std::vector<uintptr_t> find_pointers_to(
+            uintptr_t target,
+            std::optional<std::string_view> module_name = std::nullopt,
+            int required_protection = protection::read | protection::write,
+            int forbidden_protection = protection::execute,
+            size_t max_results = 10000) const;
+
+        /**
+         * @brief Watch a pointer chain. The worker thread re-walks the chain
+         *        every @p interval and invokes @p on_resolve(final_address)
+         *        whenever resolution succeeds and yields an address different
+         *        from the previous tick. The returned watch_handle stops the
+         *        worker on destruction (RAII).
+         */
+        [[nodiscard]] watch_handle watch_chain(
+            uintptr_t base,
+            std::span<const chain_step> steps,
+            std::function<void(uintptr_t)> on_resolve,
+            std::chrono::milliseconds interval = std::chrono::milliseconds{1000}) const;
+
+        /**
          * @brief Resolves a named symbol (function or data) to its runtime
          *        address. Walks every loaded module unless @p module_name
          *        restricts the search.
@@ -333,4 +393,19 @@ namespace bytebinder {
     private:
         std::shared_ptr<memory_accessor> accessor_impl;
     };
+
+    template<typename ValueType>
+    std::optional<ValueType> process::read_chain(
+        uintptr_t base,
+        std::span<const chain_step> steps) const {
+        static_assert(std::is_trivially_copyable_v<ValueType>,
+                       "read_chain requires a trivially-copyable type");
+        const auto resolution = resolve_chain(base, steps);
+        if (!resolution.address.has_value()) return std::nullopt;
+        ValueType value{};
+        const size_t got = accessor_impl->read(*resolution.address,
+                                                  &value, sizeof(ValueType));
+        if (got != sizeof(ValueType)) return std::nullopt;
+        return value;
+    }
 }

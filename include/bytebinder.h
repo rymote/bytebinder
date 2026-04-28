@@ -32,6 +32,7 @@
 #include "bb_code_scan.h"
 #include "bb_heuristics.h"
 #include "bb_dump.h"
+#include "bb_pointer_chain.h"
 #include "bb_disasm.h"
 #include "bb_symbols.h"
 #include "bb_vmt.h"

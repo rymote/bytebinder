@@ -66,6 +66,7 @@ set(BYTEBINDER_PUBLIC_HEADERS
     include/bb_memory_exceptions.h
     include/bb_pattern.h
     include/bb_pch.h
+    include/bb_pointer_chain.h
     include/bb_process.h
     include/bb_remote_accessor.h
     include/bb_scoped_unlock.h
@@ -86,6 +87,7 @@ set(BYTEBINDER_SOURCES
     src/bb_mem.cpp
     src/bb_memory_exceptions.cpp
     src/bb_pattern.cpp
+    src/bb_pointer_chain.cpp
     src/bb_remote_accessor.cpp
     src/bb_scoped_unlock.cpp
     src/bb_symbols.cpp

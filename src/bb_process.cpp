@@ -517,4 +517,28 @@ namespace bytebinder {
                                               const memory_dump_options& options) const {
         return dump_memory_for_process(*this, std::move(output_directory), options);
     }
+
+    chain_resolution process::resolve_chain(uintptr_t base,
+                                              std::span<const chain_step> steps) const {
+        return resolve_chain_for_process(*this, base, steps);
+    }
+
+    std::vector<uintptr_t> process::find_pointers_to(
+        uintptr_t target,
+        std::optional<std::string_view> module_name,
+        int required_protection,
+        int forbidden_protection,
+        size_t max_results) const {
+        return find_pointers_to_in_process(*this, target, module_name,
+                                              required_protection,
+                                              forbidden_protection,
+                                              max_results);
+    }
+
+    watch_handle process::watch_chain(uintptr_t base,
+                                        std::span<const chain_step> steps,
+                                        std::function<void(uintptr_t)> on_resolve,
+                                        std::chrono::milliseconds interval) const {
+        return watch_chain_for_process(*this, base, steps, std::move(on_resolve), interval);
+    }
 }
