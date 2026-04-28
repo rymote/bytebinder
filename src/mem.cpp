@@ -594,6 +594,65 @@ namespace bytebinder {
         }
     }
 
+    std::optional<std::string> mem::read_cstring(size_t max_length) const {
+        if (!accessor || !valid()) return std::nullopt;
+        constexpr size_t chunk_size = 256;
+        std::string accumulated;
+        accumulated.reserve(std::min<size_t>(max_length, chunk_size));
+        std::array<uint8_t, chunk_size> chunk_buffer{};
+        size_t bytes_consumed = 0;
+        while (bytes_consumed < max_length) {
+            const size_t want = std::min<size_t>(chunk_size, max_length - bytes_consumed);
+            const size_t got = accessor->read(address + bytes_consumed,
+                                                chunk_buffer.data(), want);
+            if (got == 0) {
+                return accumulated.empty() ? std::nullopt
+                                            : std::optional<std::string>(std::move(accumulated));
+            }
+            for (size_t index = 0; index < got; ++index) {
+                if (chunk_buffer[index] == 0) {
+                    accumulated.append(reinterpret_cast<const char*>(chunk_buffer.data()), index);
+                    return accumulated;
+                }
+            }
+            accumulated.append(reinterpret_cast<const char*>(chunk_buffer.data()), got);
+            bytes_consumed += got;
+            if (got < want) break; // hit an unreadable page
+        }
+        return accumulated;
+    }
+
+    std::optional<std::u16string> mem::read_wstring(size_t max_length) const {
+        if (!accessor || !valid()) return std::nullopt;
+        constexpr size_t chunk_units = 128;
+        std::u16string accumulated;
+        accumulated.reserve(std::min<size_t>(max_length, chunk_units));
+        std::array<char16_t, chunk_units> chunk_buffer{};
+        size_t units_consumed = 0;
+        while (units_consumed < max_length) {
+            const size_t want_units = std::min<size_t>(chunk_units, max_length - units_consumed);
+            const size_t want_bytes = want_units * sizeof(char16_t);
+            const size_t got_bytes = accessor->read(
+                address + units_consumed * sizeof(char16_t),
+                chunk_buffer.data(), want_bytes);
+            const size_t got_units = got_bytes / sizeof(char16_t);
+            if (got_units == 0) {
+                return accumulated.empty() ? std::nullopt
+                                            : std::optional<std::u16string>(std::move(accumulated));
+            }
+            for (size_t index = 0; index < got_units; ++index) {
+                if (chunk_buffer[index] == 0) {
+                    accumulated.append(chunk_buffer.data(), index);
+                    return accumulated;
+                }
+            }
+            accumulated.append(chunk_buffer.data(), got_units);
+            units_consumed += got_units;
+            if (got_units < want_units) break;
+        }
+        return accumulated;
+    }
+
     watch_handle mem::watch(size_t size,
                              std::function<void()> callback,
                              std::chrono::milliseconds interval) const {

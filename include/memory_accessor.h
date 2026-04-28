@@ -47,6 +47,20 @@ namespace bytebinder {
      *        - remote_accessor  — out-of-process via ReadProcessMemory or
      *                             process_vm_readv/writev; protection changes
      *                             require platform privileges.
+     *
+     * Thread safety:
+     *  - read(): safe to call concurrently from multiple threads on the same
+     *    accessor for both local_accessor and remote_accessor. The OS
+     *    primitives (memcpy, process_vm_readv, ReadProcessMemory) are
+     *    thread-safe per their documentation.
+     *  - write(): safe to call concurrently from multiple threads, but the
+     *    local_accessor write path may temporarily flip page protection;
+     *    overlapping writes to the same page across threads can race on the
+     *    protection flip. Serialize same-page writes externally.
+     *  - regions(), modules(), read_protection(): safe to call concurrently;
+     *    each call reads the OS state independently.
+     *  - set_protection(): not safe to call concurrently with itself or with
+     *    overlapping write() calls. Serialize externally.
      */
     class BYTEBINDER_API memory_accessor {
     public:

@@ -6,6 +6,7 @@
  */
 
 #include "local_accessor.h"
+#include "log_sink.h"
 #include "memory_exceptions.h"
 
 #include <cstring>
@@ -139,6 +140,8 @@ namespace bytebinder {
         DWORD ignored = 0;
         if (!VirtualProtect(reinterpret_cast<LPVOID>(address), size,
                             posix_to_page_protection(new_protection), &ignored)) {
+            log(log_level::error,
+                "local_accessor::set_protection: VirtualProtect failed");
             throw memory_operation_exception("VirtualProtect failed.",
                                               memory_error_code::PROTECTION_CHANGE_FAILED);
         }
@@ -150,6 +153,8 @@ namespace bytebinder {
         if (mprotect(reinterpret_cast<void*>(aligned_start),
                      aligned_end - aligned_start,
                      posix_to_native_protection(new_protection)) != 0) {
+            log(log_level::error,
+                "local_accessor::set_protection: mprotect failed");
             throw memory_operation_exception("mprotect failed.",
                                               memory_error_code::PROTECTION_CHANGE_FAILED);
         }

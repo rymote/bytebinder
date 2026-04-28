@@ -6,7 +6,10 @@
  */
 
 #include "remote_accessor.h"
+#include "log_sink.h"
 #include "memory_exceptions.h"
+
+#include <string>
 
 #include <cstring>
 #include <cstdio>
@@ -193,6 +196,10 @@ namespace bytebinder {
         iovec remote_io{reinterpret_cast<void*>(address), size};
         const ssize_t bytes_read = process_vm_readv(static_cast<pid_t>(target_pid),
                                                      &local_io, 1, &remote_io, 1, 0);
+        if (bytes_read < 0 || static_cast<size_t>(bytes_read) < size) {
+            log(log_level::warn,
+                "remote_accessor::read: short read at " + std::to_string(address));
+        }
         return bytes_read < 0 ? 0 : static_cast<size_t>(bytes_read);
     }
 

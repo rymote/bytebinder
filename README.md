@@ -268,44 +268,152 @@ int main() {
 }
 ```
 
-## Reference
+## API reference
 
-The full API is documented inline in `include/`. Briefly:
+The full surface is documented inline in `include/`. The summary below is a navigation aid.
 
-- `bb::process` — handle to the current process or a remote PID
-  (`process::current()`, `process::attach(pid)`). Owns a `memory_accessor`,
-  enumerates modules and regions, and exposes `at(address)` plus a
-  process-aware `scan(pattern, optional<module>)`. The header is named
-  `bb_process.h` (not `process.h`) to avoid clashing with MSVC's CRT
-  `<process.h>` that `<thread>` pulls in for `_beginthreadex`. The umbrella
-  `bytebinder.h` includes it transitively, so most users never reference
-  the filename directly.
-- `bb::memory_accessor` — abstract read/write/protection/region/module
-  surface. Implementations: `bb::local_accessor` (in-process direct
-  dereference) and `bb::remote_accessor` (`Read/WriteProcessMemory` or
-  `process_vm_readv/writev`).
-- `bb::mem` — fluent wrapper over a `uintptr_t` and a bound accessor.
-  Offset math (`add`, `rip`); typed accessor-aware I/O (`read<T>`, `write<T>`,
-  `read_bytes`, `write_bytes`); local-only pointer view (`get<T>`); patch
-  primitives (`nop`, `ret`, `jmp`, `call`, `set_call`, `hook<T>` — all
-  local-only); search (`compare`, `find`); allocation (`alloc`, `alloc_near`,
-  `make_executable` — local-only); code generation (`assemble` — local-only);
-  observability (`dump`, `watch`); disassembly (`disasm`, `disasm_one` via Zydis).
-- `bb::instruction` — decoded instruction from `mem::disasm`: address,
-  length, mnemonic, formatted Intel-syntax text, raw bytes.
-- `bb::vmt` / `bb::vmt_handle` — read/patch vtable entries on objects with a
-  reversible handle.
-- `bb::symbol_info` — name + address + size + module returned by
-  `process::resolve_symbol` / `process::symbolize`.
-- `bb::scoped_unlock` — RAII page-protection flip; restores the original
-  permissions on destruction.
-- `bb::pattern` — IDA-style signature matcher. Used by `mem::scan`.
-- `bb::hook_handle` / `bb::watch_handle` — RAII cancellation handles.
-- `bb::static_mem<T>`, `bb::static_func<R, Args...>`, `bb::static_hook<R, Args...>`,
-  `bb::init_func` — declarative registration; `bb::run_init_funcs()` flushes
-  the queue.
-- `bb::memory_operation_exception` / `bb::memory_error_code` — thrown by every
-  primitive on failure; carries a typed error code.
+### Headers at a glance
+
+| Header | Public surface |
+|---|---|
+| `bb_process.h` | `process`, `process::module_section`, `process::scan_result` |
+| `mem.h` | `mem`, `hook_handle`, `watch_handle` |
+| `memory_accessor.h` | `memory_accessor`, `protection` namespace, `region_info`, `module_info` |
+| `local_accessor.h`, `remote_accessor.h` | concrete accessors |
+| `pattern.h` | `pattern`, `parse_ida_pattern`, `pattern::scan_progress` |
+| `symbols.h` | `symbol_info`, `symbolize_result` |
+| `disasm.h` | `instruction` |
+| `vmt.h` | `vmt`, `vmt_handle` |
+| `scoped_unlock.h` | `scoped_unlock` |
+| `log_sink.h` | `log_level`, `log_sink`, `set_log_sink` |
+| `bytebinder_version.h` | `bytebinder_version()`, `bytebinder_abi_revision()` |
+| `init_system.h` | `static_mem`, `static_func`, `static_hook`, `init_func`, `run_init_funcs` |
+| `memory_exceptions.h` | `memory_operation_exception`, `memory_error_code` |
+
+### `bb::process`
+
+Handle to the current process or a remote PID. Owns a `memory_accessor`.
+
+| Method | Returns | Local? | Notes |
+|---|---|---|---|
+| `process::current()` | `process` | local | Binds to the calling process. |
+| `process::attach(pid)` | `process` | remote | Opens the target via OS primitives. |
+| `id()` | `optional<uint32_t>` | both | Process ID, if any. |
+| `alive()` | `bool` | both | False once a remote target exits. |
+| `at(address)` | `mem` | both | Bind a `mem` to this process at `address`. |
+| `regions()` | `vector<region_info>` | both | All committed regions. |
+| `regions(req, forbidden=0)` | `vector<region_info>` | both | Filtered by protection bits. |
+| `modules()` | `vector<module_info>` | both | Loaded modules with base + size. |
+| `find_module(name)` | `optional<module_info>` | both | Match by basename or full path. |
+| `module_sections(module)` | `vector<module_section>` | both | Parses PE/ELF section table. Cached per module path. |
+| `is_readable(addr, len=0)` | `bool` | both | Range fully covered by readable regions. |
+| `is_writable(addr, len=0)` | `bool` | both | Range fully covered by writable regions. |
+| `scan(pattern, module={})` | `mem` | both | First-match. Throws if module not found. |
+| `scan_all(pattern, module={}, max=10000)` | `scan_result` | both | All matches up to `max` (0 = unlimited). |
+| `scan_all(pattern, module, max, cancel*, on_progress)` | `scan_result` | both | Cancellable + progress callback per 64 KiB window. |
+| `resolve_symbol(name, module={})` | `optional<symbol_info>` | Linux: both, Windows: local | DbgHelp on Windows; ELF .dynsym/.symtab on Linux. |
+| `resolve_symbols(span<name>, module={})` | `vector<optional<symbol_info>>` | same | Single table parse per module. |
+| `symbolize(address)` | `optional<symbolize_result>` | same | Symbol + offset_from_start. |
+
+Thread safety: all const methods are safe to call concurrently from multiple threads on the same `process` instance.
+
+### `bb::mem`
+
+Fluent wrapper over a `(uintptr_t address, memory_accessor*)` pair.
+
+| Method | Returns | Local? | Notes |
+|---|---|---|---|
+| `add(offset)` | `mem` | both | Pure arithmetic. |
+| `rip(offset=3)` | `mem` | both | Resolves x86-64 RIP-relative displacement via the bound accessor. |
+| `get<T>(offset=0)` | `T` (pointer-shaped) | local-only | Returns a typed pointer; throws `INVALID_OPERATION` for remote. |
+| `read<T>(offset=0)` | `T` | both | Typed read via accessor. |
+| `read_bytes(size, offset=0)` | `vector<uint8_t>` | both | Resizes to actual bytes read. |
+| `read_cstring(max=4096)` | `optional<string>` | both | Stops at NUL. |
+| `read_wstring(max=4096)` | `optional<u16string>` | both | UTF-16, stops at NUL. |
+| `set<T>(value)` / `write<T>(value, offset=0)` | `void` | both | Typed write via accessor. |
+| `write_bytes(span, offset=0)` | `void` | both | |
+| `nop(size)` | `void` | local-only | Replaces bytes with `0x90`. Honors dry-run. |
+| `ret()` | `void` | local-only | Writes a single `0xC3`. Honors dry-run. |
+| `jmp(function)` | `mem` | local-only | E9-relative. |
+| `call(function)` | `void` | local-only | E8-relative. |
+| `set_call(target)` | `void` | local-only | Patches an existing E8 to point at `target`. |
+| `hook<T>(detour, original_out=nullptr)` | `hook_handle` | local-only | PolyHook 2.0 detour, or E8 patch if the byte at this address is 0xE8. |
+| `compare(buffer, size)` | `bool` | both | |
+| `find(buffer, size)` | `mem` | both | First occurrence within `mem::storage`. |
+| `dump(out, size)` | `void` | both | Hex dump for debugging. |
+| `watch(size, cb, interval=1s)` | `watch_handle` | local-only | RAII polling. |
+| `disasm(max_instr, max_bytes=1024)` | `vector<instruction>` | both | Zydis-decoded; reads via accessor. |
+| `disasm_one()` | `optional<instruction>` | both | |
+| `mem::scan(pattern)` (static) | `mem` | local-only | Scans `mem::storage`. Use `process::scan` for remote. |
+| `mem::alloc(size)` (static) | `mem` | local-only | Bump-allocates from the bytebinder heap. |
+| `mem::alloc_near(target, size)` (static) | `mem` | local-only | Within ±2 GiB of `target`. |
+| `mem::make_executable(region, size)` (static) | `void` | local-only | W^X flip. |
+| `mem::assemble(asm_function)` (static) | `mem` | local-only | AsmJit-backed code generation. |
+
+### `bb::memory_accessor`
+
+Abstract base. Implementations: `bb::local_accessor`, `bb::remote_accessor`.
+
+| Method | Returns | Notes |
+|---|---|---|
+| `is_local()` | `bool` | |
+| `process_id()` | `optional<uint32_t>` | |
+| `read(addr, dst, n)` | `size_t` | Returns bytes actually read; partial on permission gap. |
+| `write(addr, src, n)` | `size_t` | Local accessor temporarily flips page protection. |
+| `read_protection(addr)` | `int` (posix bits) | |
+| `set_protection(addr, n, new)` | `int` (previous) | Linux remote uses ptrace + injected `mprotect`. |
+| `regions()` | `vector<region_info>` | |
+| `modules()` | `vector<module_info>` | |
+| `find_module(name)` | `optional<module_info>` | Helper on the base class. |
+
+Thread safety: `read`, `regions`, `modules`, `read_protection` are safe to call concurrently. `write` and `set_protection` need external serialization on overlapping pages.
+
+### `bb::pattern`
+
+IDA-style signature matcher.
+
+| Method | Returns | Notes |
+|---|---|---|
+| `parse_ida_pattern(text)` (free) | `pattern` | `?` and `??` are wildcard nibbles. |
+| `scan()` | `uintptr_t` | Scans `mem::storage`. |
+| `scan(accessor, base, size)` | `uintptr_t` | First match in a range. |
+| `scan_all(accessor, base, size, max, on_match)` | `size_t` (matches reported) | `on_match` returning false stops early. `max=0` is unlimited. |
+| `scan_all(accessor, base, size, max, on_match, cancel*, on_progress)` | `size_t` | Cancellable + progress callback per 64 KiB. |
+
+### `bb::vmt` / `bb::vmt_handle`
+
+Read and patch vtable entries on objects with a reversible handle.
+
+| Method | Returns | Notes |
+|---|---|---|
+| `vmt(object_address)` | `vmt` | Reads `*object_address` to get the vtable. |
+| `hook(index, target)` | `vmt_handle` | Patches `vtable[index]`. |
+| `vmt_handle::unhook()` | `bool` | Restores the original entry. |
+
+### Free functions and helper types
+
+| Symbol | Purpose |
+|---|---|
+| `bb::parse_ida_pattern(text)` | Build a `pattern` from an IDA-style hex string. |
+| `bb::set_log_sink(sink)` | Install (or clear with `{}`) a process-wide log callback. |
+| `bb::log_level` | `debug` / `info` / `warn` / `error`. |
+| `bb::run_init_funcs()` | Resolve and install every `static_*` registration. |
+| `bytebinder_version()` | Semantic version string of the linked build. |
+| `bytebinder_abi_revision()` | Monotonic ABI revision; check at dlopen time. |
+| `bb::region_info` | `{base, size, protection, mapped_path}`. |
+| `bb::module_info` | `{name, path, base, size}`. |
+| `bb::process::module_section` | `{name, base, size, protection}` from PE/ELF section table. |
+| `bb::symbol_info` | `{name, module_name, address, size}`. |
+| `bb::symbolize_result` | `{symbol, offset_from_start}`. |
+| `bb::process::scan_result` | `{matches, regions_scanned, regions_skipped, bytes_scanned}`. |
+| `bb::pattern::scan_progress` | `{bytes_scanned, bytes_total, matches_so_far}`. |
+| `bb::instruction` | `{address, length, mnemonic, text, bytes}` decoded by Zydis. |
+| `bb::scoped_unlock` | RAII page-protection flip. |
+| `bb::hook_handle`, `bb::watch_handle` | RAII cancellation handles. |
+
+### Errors
+
+`bb::memory_operation_exception` is thrown by every primitive on failure and carries a `bb::memory_error_code` enum value (`READ_FAILED`, `WRITE_FAILED`, `PROTECTION_CHANGE_FAILED`, `HOOK_INSTALLATION_FAILED`, `PATTERN_MATCH_FAILED`, `MODULE_INFO_RETRIEVAL_FAILED`, `INVALID_OPERATION`). For diagnostic breadcrumbs at OS-error sites, install a `bb::log_sink`.
 
 ### Dry-run mode
 

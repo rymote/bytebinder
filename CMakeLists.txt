@@ -54,9 +54,11 @@ set(BYTEBINDER_PUBLIC_HEADERS
     include/bb_process.h
     include/bytebinder.h
     include/bytebinder_api.h
+    include/bytebinder_version.h
     include/disasm.h
     include/init_system.h
     include/local_accessor.h
+    include/log_sink.h
     include/macros.h
     include/mem.h
     include/memory_accessor.h
@@ -72,6 +74,7 @@ set(BYTEBINDER_PUBLIC_HEADERS
 set(BYTEBINDER_SOURCES
     src/disasm.cpp
     src/local_accessor.cpp
+    src/log_sink.cpp
     src/mem.cpp
     src/memory_exceptions.cpp
     src/pattern.cpp
@@ -79,6 +82,7 @@ set(BYTEBINDER_SOURCES
     src/remote_accessor.cpp
     src/scoped_unlock.cpp
     src/symbols.cpp
+    src/version.cpp
     src/vmt.cpp
 )
 
@@ -102,6 +106,9 @@ if(WIN32)
     target_link_libraries(bytebinder-objects PUBLIC dbghelp)
 endif()
 target_precompile_headers(bytebinder-objects PUBLIC include/pch.h)
+
+target_compile_definitions(bytebinder-objects PRIVATE
+    BYTEBINDER_VERSION_STRING="${PROJECT_VERSION}")
 
 if(BYTEBINDER_ENABLE_SANITIZERS AND NOT MSVC)
     target_compile_options(bytebinder-objects PUBLIC

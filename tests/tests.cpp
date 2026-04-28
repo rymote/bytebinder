@@ -3,6 +3,8 @@
 #include "bytebinder.h"
 #include "bb_process.h"
 
+#include <array>
+
 #if !defined(_WIN32)
     #include <sys/wait.h>
     #include <sys/types.h>
@@ -465,9 +467,34 @@ TEST_CASE("process::symbolize round-trips an address back to its name", "[proces
     REQUIRE(resolved_memcpy.has_value());
     const auto symbolized = current_process.symbolize(resolved_memcpy->address);
     REQUIRE(symbolized.has_value());
-    REQUIRE(symbolized->name == "memcpy");
+    REQUIRE(symbolized->symbol.name == "memcpy");
 }
 #endif
+
+TEST_CASE("process::symbolize returns offset from symbol start", "[symbols]") {
+    auto current_process = bb::process::current();
+    auto resolved = current_process.resolve_symbol("memcpy");
+    if (!resolved.has_value()) {
+        SUCCEED("memcpy unresolved on this platform/build; offset semantics untestable here");
+        return;
+    }
+    const uintptr_t query_address = resolved->address + 7;
+    auto symbolized = current_process.symbolize(query_address);
+    REQUIRE(symbolized.has_value());
+    REQUIRE(symbolized->symbol.address + symbolized->offset_from_start == query_address);
+}
+
+TEST_CASE("process::resolve_symbols batches lookups", "[symbols]") {
+    auto current_process = bb::process::current();
+    std::array<std::string_view, 3> names{"memcpy", "memmove", "memset"};
+    auto results = current_process.resolve_symbols(names);
+    REQUIRE(results.size() == names.size());
+    for (size_t index = 0; index < names.size(); ++index) {
+        if (results[index].has_value()) {
+            REQUIRE_FALSE(results[index]->name.empty());
+        }
+    }
+}
 
 TEST_CASE("process::current() returns a usable local handle", "[process][local]") {
     auto current_process = bb::process::current();
@@ -731,3 +758,331 @@ TEST_CASE("Out-of-process: remote_accessor reads, writes, and scans a child", "[
     close(signal_pipe[1]);
 }
 #endif
+
+namespace {
+    // Placed in a globally-addressable buffer so a regions-intersected scan
+    // across the test binary's mapped image deterministically locates it.
+    // The byte sequence is unusual enough that we don't expect false positives
+    // anywhere else in the process.
+    alignas(16) volatile unsigned char bytebinder_scan_marker_buffer[64] = {
+        0x55, 0xAA, 0x42, 0x42, 0x4D, 0x4B, 0x52, 0x01,
+        0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE,
+    };
+}
+
+// AddressSanitizer adds redzones around every global, so a 64 KiB chunked read
+// over a real module's data section necessarily touches them and triggers a
+// global-buffer-overflow report. The whole-module scan path is exercised in
+// non-sanitizer builds; the boundary and buffer-level scan paths are exercised
+// by the dedicated `pattern::scan_all` tests, which use heap-allocated buffers
+// that ASan does not redzone-overflow on.
+#if !defined(__SANITIZE_ADDRESS__) && !(defined(__has_feature) && __has_feature(address_sanitizer))
+TEST_CASE("process::scan finds a marker after partial-read fix", "[process][scan]") {
+    auto current_process = bb::process::current();
+    const auto self_modules = current_process.modules();
+    REQUIRE_FALSE(self_modules.empty());
+    bb::mem hit = current_process.scan(
+        "55 AA 42 42 4D 4B 52 01 DE AD BE EF CA FE BA BE",
+        self_modules.front().name);
+    REQUIRE(hit.address != std::numeric_limits<uintptr_t>::max());
+    REQUIRE(hit.address ==
+            reinterpret_cast<uintptr_t>(&bytebinder_scan_marker_buffer[0]));
+}
+#endif
+
+TEST_CASE("process::alive() returns true for current process", "[process][lifecycle]") {
+    REQUIRE(bb::process::current().alive());
+}
+
+#if !defined(_WIN32)
+TEST_CASE("process::alive() returns false after target exits", "[process][lifecycle]") {
+    int control_pipe[2];
+    REQUIRE(pipe(control_pipe) == 0);
+    pid_t child_pid = fork();
+    REQUIRE(child_pid >= 0);
+    if (child_pid == 0) {
+        close(control_pipe[1]);
+        char wakeup_byte = 0;
+        (void)read(control_pipe[0], &wakeup_byte, 1);
+        _exit(0);
+    }
+    close(control_pipe[0]);
+
+    auto handle = bb::process::attach(static_cast<uint32_t>(child_pid));
+    REQUIRE(handle.alive());
+
+    REQUIRE(write(control_pipe[1], "x", 1) == 1);
+    close(control_pipe[1]);
+
+    int wait_status = 0;
+    REQUIRE(waitpid(child_pid, &wait_status, 0) == child_pid);
+
+    REQUIRE_FALSE(handle.alive());
+}
+#endif
+
+TEST_CASE("pattern::scan_all reports every match in a buffer", "[pattern][scan_all]") {
+    static unsigned char haystack[1024];
+    std::memset(haystack, 0, sizeof(haystack));
+    const unsigned char needle[] = {0xDE, 0xAD, 0xBE, 0xEF};
+    std::memcpy(haystack + 64,  needle, sizeof(needle));
+    std::memcpy(haystack + 256, needle, sizeof(needle));
+    std::memcpy(haystack + 700, needle, sizeof(needle));
+
+    bb::pattern parsed = bb::parse_ida_pattern("DE AD BE EF");
+    std::vector<uintptr_t> hits;
+    parsed.scan_all(bb::local_accessor::instance(),
+                     reinterpret_cast<uintptr_t>(haystack),
+                     sizeof(haystack), 0,
+                     [&](uintptr_t address) {
+                         hits.push_back(address);
+                         return true;
+                     });
+    REQUIRE(hits.size() == 3);
+    REQUIRE(hits[0] == reinterpret_cast<uintptr_t>(haystack + 64));
+    REQUIRE(hits[1] == reinterpret_cast<uintptr_t>(haystack + 256));
+    REQUIRE(hits[2] == reinterpret_cast<uintptr_t>(haystack + 700));
+}
+
+TEST_CASE("pattern::scan_all honors max_results", "[pattern][scan_all]") {
+    static unsigned char haystack[256];
+    std::memset(haystack, 0, sizeof(haystack));
+    for (int index = 0; index < 200; index += 8) haystack[index] = 0xAA;
+
+    bb::pattern parsed = bb::parse_ida_pattern("AA");
+    std::vector<uintptr_t> hits;
+    parsed.scan_all(bb::local_accessor::instance(),
+                     reinterpret_cast<uintptr_t>(haystack),
+                     sizeof(haystack), 5,
+                     [&](uintptr_t address) {
+                         hits.push_back(address);
+                         return true;
+                     });
+    REQUIRE(hits.size() == 5);
+    REQUIRE(hits[0] == reinterpret_cast<uintptr_t>(haystack + 0));
+    REQUIRE(hits[1] == reinterpret_cast<uintptr_t>(haystack + 8));
+    REQUIRE(hits[2] == reinterpret_cast<uintptr_t>(haystack + 16));
+    REQUIRE(hits[3] == reinterpret_cast<uintptr_t>(haystack + 24));
+    REQUIRE(hits[4] == reinterpret_cast<uintptr_t>(haystack + 32));
+}
+
+TEST_CASE("pattern::scan_all stops early when callback returns false", "[pattern][scan_all]") {
+    static unsigned char haystack[256];
+    std::memset(haystack, 0, sizeof(haystack));
+    haystack[10] = 0xAA;
+    haystack[50] = 0xAA;
+    haystack[100] = 0xAA;
+
+    bb::pattern parsed = bb::parse_ida_pattern("AA");
+    size_t hit_count = 0;
+    uintptr_t first_address = 0;
+    const size_t reported = parsed.scan_all(
+        bb::local_accessor::instance(),
+        reinterpret_cast<uintptr_t>(haystack),
+        sizeof(haystack), 0,
+        [&](uintptr_t address) {
+            ++hit_count;
+            first_address = address;
+            return false;
+        });
+    REQUIRE(hit_count == 1);
+    REQUIRE(reported == 1);
+    REQUIRE(first_address == reinterpret_cast<uintptr_t>(haystack + 10));
+}
+
+TEST_CASE("process::regions(required, forbidden) filters correctly", "[process][regions]") {
+    auto current_process = bb::process::current();
+    const auto code_only = current_process.regions(bb::protection::execute);
+    const auto data_only = current_process.regions(bb::protection::read,
+                                                    bb::protection::execute);
+    REQUIRE_FALSE(code_only.empty());
+    REQUIRE_FALSE(data_only.empty());
+    for (const auto& region : code_only) {
+        REQUIRE((region.protection & bb::protection::execute) != 0);
+    }
+    for (const auto& region : data_only) {
+        REQUIRE((region.protection & bb::protection::read)    != 0);
+        REQUIRE((region.protection & bb::protection::execute) == 0);
+    }
+}
+
+// Plain function whose address we use as a "code, not data" probe in the
+// is_writable test below and in the remote-disasm test from Task 8. Defined
+// before the test cases so taking its address is well-formed.
+extern "C" void bytebinder_test_marker_function() {}
+
+TEST_CASE("process::is_readable on stack and bogus addresses", "[process][predicates]") {
+    auto current_process = bb::process::current();
+    int local_value = 0;
+    REQUIRE(current_process.is_readable(reinterpret_cast<uintptr_t>(&local_value),
+                                         sizeof(local_value)));
+    REQUIRE_FALSE(current_process.is_readable(0x1, 1));
+    REQUIRE_FALSE(current_process.is_readable(
+        std::numeric_limits<uintptr_t>::max() - 16, 8));
+}
+
+TEST_CASE("process::is_writable rejects code regions", "[process][predicates]") {
+    auto current_process = bb::process::current();
+    int local_value = 0;
+    REQUIRE(current_process.is_writable(reinterpret_cast<uintptr_t>(&local_value),
+                                         sizeof(local_value)));
+    auto function_pointer =
+        reinterpret_cast<uintptr_t>(&bytebinder_test_marker_function);
+    REQUIRE_FALSE(current_process.is_writable(function_pointer, 1));
+}
+
+TEST_CASE("pattern::scan_all does not double-count matches at window boundary",
+          "[pattern][scan_all]") {
+    // The scan window is 64 KiB. A match at exactly offset 64 KiB used to be
+    // reported twice — once at the tail of window N and once at the head of
+    // window N+1. This test pins the fix.
+    constexpr size_t window_step = 64 * 1024;
+    constexpr size_t buffer_size = window_step + 32;
+    static std::unique_ptr<unsigned char[]> haystack{new unsigned char[buffer_size]};
+    std::memset(haystack.get(), 0, buffer_size);
+    const unsigned char needle[] = {0x55, 0xAA, 0x42, 0x42};
+    std::memcpy(haystack.get() + window_step, needle, sizeof(needle));
+
+    bb::pattern parsed = bb::parse_ida_pattern("55 AA 42 42");
+    std::vector<uintptr_t> hits;
+    parsed.scan_all(bb::local_accessor::instance(),
+                     reinterpret_cast<uintptr_t>(haystack.get()),
+                     buffer_size, 0,
+                     [&](uintptr_t address) {
+                         hits.push_back(address);
+                         return true;
+                     });
+    REQUIRE(hits.size() == 1);
+    REQUIRE(hits[0] == reinterpret_cast<uintptr_t>(haystack.get() + window_step));
+}
+
+TEST_CASE("mem::read_cstring reads NUL-terminated string", "[mem][string]") {
+    // Buffer is sized larger than the chunked reader's 256-byte window so the
+    // first chunk read stays inside the allocation even on sanitizer builds
+    // that add redzones around tightly-sized arrays.
+    static char sample[512] = {};
+    std::memcpy(sample, "hello bytebinder", 16);
+    bb::mem at_sample(reinterpret_cast<void*>(sample));
+    auto result = at_sample.read_cstring();
+    REQUIRE(result.has_value());
+    REQUIRE(*result == "hello bytebinder");
+}
+
+TEST_CASE("mem::read_cstring honors max_length", "[mem][string]") {
+    static char sample[512] = {};
+    std::memcpy(sample, "abcdefghijklmnop", 16);
+    bb::mem at_sample(reinterpret_cast<void*>(sample));
+    auto result = at_sample.read_cstring(5);
+    REQUIRE(result.has_value());
+    REQUIRE(*result == "abcde");
+}
+
+TEST_CASE("mem::read_wstring reads UTF-16 sequence", "[mem][string]") {
+    static char16_t sample[512] = {};
+    static const char16_t literal[] = u"wide test";
+    std::memcpy(sample, literal, sizeof(literal));
+    bb::mem at_sample(reinterpret_cast<void*>(sample));
+    auto result = at_sample.read_wstring();
+    REQUIRE(result.has_value());
+    REQUIRE(*result == std::u16string(u"wide test"));
+}
+
+TEST_CASE("bytebinder_version returns a non-empty string", "[meta]") {
+    const char* version = bytebinder_version();
+    REQUIRE(version != nullptr);
+    REQUIRE(std::strlen(version) > 0);
+}
+
+TEST_CASE("bytebinder_abi_revision is positive", "[meta]") {
+    REQUIRE(bytebinder_abi_revision() >= 1u);
+}
+
+TEST_CASE("mem::disasm works through a remote-style accessor", "[mem][disasm][remote]") {
+    // Self-attach: same address space, but the bound accessor is the remote
+    // accessor (Read/WriteProcessMemory or process_vm_readv path), exercising
+    // the same code path ryclass-mcp will use.
+    const auto current_pid = bb::process::current().id();
+    REQUIRE(current_pid.has_value());
+    auto self_via_remote = bb::process::attach(*current_pid);
+
+    auto code_at_test_function = self_via_remote.at(
+        reinterpret_cast<uintptr_t>(&bytebinder_test_marker_function));
+    auto decoded = code_at_test_function.disasm(/*max_instructions=*/1);
+    REQUIRE_FALSE(decoded.empty());
+    REQUIRE(decoded.front().length > 0);
+}
+
+TEST_CASE("set_log_sink captures error from missing module", "[log_sink]") {
+    std::vector<std::pair<bb::log_level, std::string>> captured;
+    bb::set_log_sink([&](bb::log_level level, std::string_view message) {
+        captured.emplace_back(level, std::string(message));
+    });
+    auto current_process = bb::process::current();
+    REQUIRE_THROWS_AS(current_process.scan("DE AD", "definitely-not-a-real-module-xyz"),
+                       bb::memory_operation_exception);
+    bb::set_log_sink({}); // clear
+
+    bool saw_module_error = false;
+    for (const auto& [level, message] : captured) {
+        if (level == bb::log_level::error
+            && message.find("module not found") != std::string::npos) {
+            saw_module_error = true;
+            break;
+        }
+    }
+    REQUIRE(saw_module_error);
+}
+
+TEST_CASE("pattern::scan_all honors cancel flag", "[pattern][cancel]") {
+    static unsigned char haystack[1024 * 256]; // 256 KiB
+    std::memset(haystack, 0, sizeof(haystack));
+    std::atomic<bool> cancel_flag{true}; // cancelled before first iteration
+
+    bb::pattern parsed = bb::parse_ida_pattern("AA BB");
+    size_t matches = parsed.scan_all(
+        bb::local_accessor::instance(),
+        reinterpret_cast<uintptr_t>(haystack),
+        sizeof(haystack), 0,
+        [](uintptr_t) { return true; },
+        &cancel_flag, nullptr);
+    REQUIRE(matches == 0);
+}
+
+TEST_CASE("pattern::scan_all reports progress", "[pattern][progress]") {
+    static unsigned char haystack[1024 * 200];
+    std::memset(haystack, 0, sizeof(haystack));
+    bb::pattern parsed = bb::parse_ida_pattern("AA BB");
+    size_t progress_calls = 0;
+    parsed.scan_all(
+        bb::local_accessor::instance(),
+        reinterpret_cast<uintptr_t>(haystack),
+        sizeof(haystack), 0,
+        [](uintptr_t) { return true; },
+        nullptr,
+        [&](const bb::pattern::scan_progress& progress) {
+            REQUIRE(progress.bytes_total == sizeof(haystack));
+            REQUIRE(progress.bytes_scanned <= sizeof(haystack));
+            ++progress_calls;
+        });
+    REQUIRE(progress_calls > 0);
+}
+
+TEST_CASE("process::module_sections returns at least one allocatable section",
+          "[process][sections]") {
+    auto current_process = bb::process::current();
+    const auto self_modules = current_process.modules();
+    REQUIRE_FALSE(self_modules.empty());
+    bool found_any = false;
+    for (const auto& candidate : self_modules) {
+        const auto sections = current_process.module_sections(candidate.name);
+        if (!sections.empty()) {
+            found_any = true;
+            for (const auto& section : sections) {
+                REQUIRE(section.size > 0);
+                REQUIRE(section.base >= candidate.base);
+            }
+            break;
+        }
+    }
+    REQUIRE(found_any);
+}

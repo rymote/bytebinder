@@ -232,6 +232,20 @@ namespace bytebinder {
         }
 
         /**
+         * @brief Reads a NUL-terminated C string at this address via the bound
+         *        accessor. Reads in 256-byte chunks; stops at the first NUL or
+         *        at @p max_length. Returns std::nullopt if the first chunk is
+         *        unreadable; returns the partial string if a later chunk fails.
+         */
+        [[nodiscard]] std::optional<std::string> read_cstring(size_t max_length = 4096) const;
+
+        /**
+         * @brief Reads a NUL-terminated UTF-16 string (Windows wide string).
+         *        Same semantics as read_cstring but units are 16 bits.
+         */
+        [[nodiscard]] std::optional<std::u16string> read_wstring(size_t max_length = 4096) const;
+
+        /**
          * @brief Writes @p value (sizeof(T) bytes) to address+offset via the bound
          *        accessor.
          */

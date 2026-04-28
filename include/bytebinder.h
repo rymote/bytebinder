@@ -31,5 +31,7 @@
 #include "disasm.h"
 #include "symbols.h"
 #include "vmt.h"
+#include "log_sink.h"
+#include "bytebinder_version.h"
 
 namespace bb = bytebinder;

@@ -23,4 +23,13 @@ namespace bytebinder {
 
         [[nodiscard]] bool valid() const noexcept { return address != 0; }
     };
+
+    /**
+     * @brief Result of process::symbolize: the containing symbol plus the
+     *        byte offset from the symbol's start to the queried address.
+     */
+    struct BYTEBINDER_API symbolize_result {
+        symbol_info symbol;
+        size_t offset_from_start = 0;
+    };
 }

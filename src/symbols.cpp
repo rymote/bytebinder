@@ -285,7 +285,44 @@ namespace bytebinder {
 #endif
     }
 
-    std::optional<symbol_info> process::symbolize(uintptr_t address) const {
+    std::vector<std::optional<symbol_info>> process::resolve_symbols(
+        std::span<const std::string_view> symbol_names,
+        std::optional<std::string_view> module_name) const {
+        std::vector<std::optional<symbol_info>> results(symbol_names.size());
+        if (!accessor_impl) return results;
+#if defined(_WIN32)
+        // DbgHelp's SymFromName is already a single hash lookup per call;
+        // iterate one by one. The optimization vs sequential resolve_symbol is
+        // negligible on Windows.
+        for (size_t index = 0; index < symbol_names.size(); ++index) {
+            results[index] = resolve_symbol(symbol_names[index], module_name);
+        }
+        return results;
+#else
+        const auto loaded_modules = accessor_impl->modules();
+        for (const auto& current_module : loaded_modules) {
+            if (module_name.has_value()
+                && current_module.name != *module_name
+                && current_module.path != *module_name) {
+                continue;
+            }
+            if (current_module.path.empty() || current_module.path[0] != '/') continue;
+            const auto* table = load_or_get_cached(current_module);
+            if (!table) continue;
+            for (size_t index = 0; index < symbol_names.size(); ++index) {
+                if (results[index].has_value()) continue;
+                const std::string lookup_key(symbol_names[index]);
+                const auto found = table->by_name.find(lookup_key);
+                if (found != table->by_name.end()) {
+                    results[index] = table->entries_sorted_by_address[found->second];
+                }
+            }
+        }
+        return results;
+#endif
+    }
+
+    std::optional<symbolize_result> process::symbolize(uintptr_t address) const {
         if (!accessor_impl) {
             return std::nullopt;
         }
@@ -311,11 +348,12 @@ namespace bytebinder {
             return std::nullopt;
         }
 
-        symbol_info result;
-        result.name.assign(symbol_struct->Name, symbol_struct->NameLen);
-        result.address = static_cast<uintptr_t>(symbol_struct->Address);
-        result.size = symbol_struct->Size;
-        result.module_name = lookup_module_basename(result.address);
+        symbolize_result result;
+        result.symbol.name.assign(symbol_struct->Name, symbol_struct->NameLen);
+        result.symbol.address = static_cast<uintptr_t>(symbol_struct->Address);
+        result.symbol.size = symbol_struct->Size;
+        result.symbol.module_name = lookup_module_basename(result.symbol.address);
+        result.offset_from_start = static_cast<size_t>(displacement_from_symbol);
         return result;
 #else
         const auto loaded_modules = accessor_impl->modules();
@@ -346,7 +384,10 @@ namespace bytebinder {
             const uintptr_t candidate_end =
                 candidate.address + (candidate.size > 0 ? candidate.size : 1);
             if (address >= candidate.address && address < candidate_end) {
-                return candidate;
+                symbolize_result result;
+                result.symbol = candidate;
+                result.offset_from_start = address - candidate.address;
+                return result;
             }
         }
         return std::nullopt;

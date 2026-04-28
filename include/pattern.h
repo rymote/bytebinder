@@ -42,6 +42,34 @@ namespace bytebinder {
         [[nodiscard]] uintptr_t scan(memory_accessor& accessor,
                                        uintptr_t base, size_t total_size) const;
 
+        /// Streaming variant: invokes @p on_match for each match found in
+        /// `[base, base+total_size)`. Returns the number of matches reported.
+        /// @p on_match returning false stops the scan early.
+        /// @p max_results = 0 means unlimited.
+        size_t scan_all(memory_accessor& accessor,
+                        uintptr_t base, size_t total_size,
+                        size_t max_results,
+                        const std::function<bool(uintptr_t)>& on_match) const;
+
+        struct BYTEBINDER_API scan_progress {
+            uintptr_t bytes_scanned = 0;
+            uintptr_t bytes_total   = 0;
+            size_t    matches_so_far = 0;
+        };
+
+        /**
+         * @brief Variant of scan_all with an external cancel flag and an
+         *        optional progress callback. @p cancel may be nullptr.
+         *        @p on_progress may be nullptr; if set, it is called at most
+         *        once per 64 KiB window.
+         */
+        size_t scan_all(memory_accessor& accessor,
+                        uintptr_t base, size_t total_size,
+                        size_t max_results,
+                        const std::function<bool(uintptr_t)>& on_match,
+                        const std::atomic<bool>* cancel,
+                        const std::function<void(const scan_progress&)>& on_progress) const;
+
     private:
         [[nodiscard]] bool match_local(uintptr_t haystack_address) const noexcept;
         [[nodiscard]] bool match_buffer(const uint8_t* buffer) const noexcept;
