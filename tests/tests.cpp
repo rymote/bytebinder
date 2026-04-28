@@ -16,6 +16,24 @@
     #include <stdlib.h>
 #endif
 
+// Detect AddressSanitizer in a compiler-portable way. MSVC's preprocessor
+// errors on `__has_feature(address_sanitizer)` even when guarded by
+// `defined(__has_feature) &&` because undefined identifiers in #if
+// expressions become 0, producing the syntax `0(address_sanitizer)`.
+// Splitting the check into nested #if/#elif keeps the function-like macro
+// invocation out of any code path MSVC will see.
+#if defined(__SANITIZE_ADDRESS__)
+#  define BYTEBINDER_HAS_ASAN 1
+#elif defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+#    define BYTEBINDER_HAS_ASAN 1
+#  else
+#    define BYTEBINDER_HAS_ASAN 0
+#  endif
+#else
+#  define BYTEBINDER_HAS_ASAN 0
+#endif
+
 namespace {
     // Stop Windows debug runtimes from popping modal dialogs (CRT assertion,
     // abort(), unhandled exception) — those hang CI forever.
@@ -776,7 +794,7 @@ namespace {
 // non-sanitizer builds; the boundary and buffer-level scan paths are exercised
 // by the dedicated `pattern::scan_all` tests, which use heap-allocated buffers
 // that ASan does not redzone-overflow on.
-#if !defined(__SANITIZE_ADDRESS__) && !(defined(__has_feature) && __has_feature(address_sanitizer))
+#if !BYTEBINDER_HAS_ASAN
 TEST_CASE("process::scan finds a marker after partial-read fix", "[process][scan]") {
     auto current_process = bb::process::current();
     const auto self_modules = current_process.modules();
@@ -1104,7 +1122,7 @@ namespace {
 // inside pattern::scan / typed_scan reads in 64 KiB strides, which crosses
 // ASan's per-global redzones in the test binary's .data/.rdata. The non-ASan
 // build covers correctness; under ASan we skip these to avoid false positives.
-#if !defined(__SANITIZE_ADDRESS__) && !(defined(__has_feature) && __has_feature(address_sanitizer))
+#if !BYTEBINDER_HAS_ASAN
 TEST_CASE("process::find_bytes locates exact byte sequence", "[process][find_bytes]") {
     volatile unsigned char xor_key = 0x5A;
     unsigned char needle[12];
@@ -1342,7 +1360,7 @@ TEST_CASE("process::find_instruction_pattern matches a simple template",
 // Heuristic + dump tests also crash under ASan: find_vtables and
 // find_string_tables read whole regions in one go, dump_memory copies in 1 MiB
 // chunks. All cross global redzones in the test binary's data segments.
-#if !defined(__SANITIZE_ADDRESS__) && !(defined(__has_feature) && __has_feature(address_sanitizer))
+#if !BYTEBINDER_HAS_ASAN
 TEST_CASE("process::find_vtables returns plausible candidates", "[process][find_vtables]") {
     auto current_process = bb::process::current();
     auto candidates = current_process.find_vtables(std::nullopt, 3, 100);
