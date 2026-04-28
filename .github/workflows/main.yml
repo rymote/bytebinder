@@ -149,9 +149,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y crossbuild-essential-arm64 crossbuild-essential-armhf
       - name: aarch64 syntax check
-        run: aarch64-linux-gnu-g++ -std=c++20 -c src/remote_accessor.cpp -Iinclude -fsyntax-only
+        run: aarch64-linux-gnu-g++ -std=c++20 -c src/bb_remote_accessor.cpp -Iinclude -fsyntax-only
       - name: armhf syntax check
-        run: arm-linux-gnueabihf-g++ -std=c++20 -c src/remote_accessor.cpp -Iinclude -fsyntax-only
+        run: arm-linux-gnueabihf-g++ -std=c++20 -c src/bb_remote_accessor.cpp -Iinclude -fsyntax-only
 
   release:
     name: Publish per-variant release zips

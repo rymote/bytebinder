@@ -926,8 +926,14 @@ TEST_CASE("process::regions(required, forbidden) filters correctly", "[process][
 
 // Plain function whose address we use as a "code, not data" probe in the
 // is_writable test below and in the remote-disasm test from Task 8. Defined
-// before the test cases so taking its address is well-formed.
-extern "C" void bytebinder_test_marker_function() {}
+// before the test cases so taking its address is well-formed. The volatile
+// store gives the function an observable side effect so compilers (especially
+// MSVC) can't elide direct calls to it — find_xrefs needs a real `call`
+// instruction in the binary to detect.
+volatile int bytebinder_test_marker_observable = 0;
+extern "C" void bytebinder_test_marker_function() {
+    bytebinder_test_marker_observable += 1;
+}
 
 TEST_CASE("process::is_readable on stack and bogus addresses", "[process][predicates]") {
     auto current_process = bb::process::current();
@@ -1308,14 +1314,10 @@ __attribute__((noinline, optnone))
 __declspec(noinline)
 #endif
 void bytebinder_test_call_marker_helper() {
-    // Emit a direct CALL to bytebinder_test_marker_function via inline asm so
-    // the compiler can't elide it after observing that the callee is empty.
+    // The marker function has an observable volatile side effect, so the
+    // compiler must emit a real `call` instruction here on every backend.
     // This is what the find_xrefs scanner is designed to detect.
-#if defined(__GNUC__) || defined(__clang__)
-    asm volatile("call bytebinder_test_marker_function" ::: "memory");
-#else
     bytebinder_test_marker_function();
-#endif
 }
 
 TEST_CASE("process::find_xrefs locates a call to a known function", "[process][find_xrefs]") {
@@ -1414,12 +1416,16 @@ TEST_CASE("process::dump_memory writes regions and a manifest", "[process][dump]
 
     auto current_process = bb::process::current();
     bb::memory_dump_options options;
-    options.include_executable = false;
-    options.include_writable_data = false;
+    options.include_executable = true;
+    options.include_writable_data = true;
     options.include_readonly_data = true;
-    options.include_anonymous_mappings = false;
+    // Windows VirtualQueryEx never populates a mapped path, so every region
+    // looks "anonymous". Including anonymous mappings makes the test portable
+    // across Linux (which uses the flag to skip [heap]/[stack]) and Windows
+    // (where it's the only way regions get dumped at all).
+    options.include_anonymous_mappings = true;
     options.min_region_size = 4096;
-    options.max_region_size = 1024 * 1024;
+    options.max_region_size = 64 * 1024;
 
     auto result = current_process.dump_memory(tmp_dir, options);
 
