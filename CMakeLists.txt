@@ -90,8 +90,8 @@ set(BYTEBINDER_SOURCES
     src/bb_scoped_unlock.cpp
     src/bb_symbols.cpp
     src/bb_version.cpp
+    src/bb_process.cpp
     src/bb_vmt.cpp
-    src/process.cpp
 )
 
 add_library(bytebinder-objects OBJECT

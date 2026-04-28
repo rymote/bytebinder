@@ -410,19 +410,24 @@ The full surface is documented inline in `include/`. The summary below is a navi
 
 | Header | Public surface |
 |---|---|
+| `bytebinder.h` | umbrella header (single include) |
 | `bb_process.h` | `process`, `process::module_section`, `process::scan_result` |
-| `mem.h` | `mem`, `hook_handle`, `watch_handle` |
-| `memory_accessor.h` | `memory_accessor`, `protection` namespace, `region_info`, `module_info` |
-| `local_accessor.h`, `remote_accessor.h` | concrete accessors |
-| `pattern.h` | `pattern`, `parse_ida_pattern`, `pattern::scan_progress` |
-| `symbols.h` | `symbol_info`, `symbolize_result` |
-| `disasm.h` | `instruction` |
-| `vmt.h` | `vmt`, `vmt_handle` |
-| `scoped_unlock.h` | `scoped_unlock` |
-| `log_sink.h` | `log_level`, `log_sink`, `set_log_sink` |
-| `bytebinder_version.h` | `bytebinder_version()`, `bytebinder_abi_revision()` |
-| `init_system.h` | `static_mem`, `static_func`, `static_hook`, `init_func`, `run_init_funcs` |
-| `memory_exceptions.h` | `memory_operation_exception`, `memory_error_code` |
+| `bb_mem.h` | `mem`, `hook_handle`, `watch_handle` |
+| `bb_memory_accessor.h` | `memory_accessor`, `protection` namespace, `region_info`, `module_info` |
+| `bb_local_accessor.h`, `bb_remote_accessor.h` | concrete accessors |
+| `bb_pattern.h` | `pattern`, `parse_ida_pattern`, `pattern::scan_progress` |
+| `bb_typed_scan.h` | `process::scan_value`, `scan_value_in_range`, `scan_value_with_mask` |
+| `bb_code_scan.h` | `xref`, `xref_kind`, `instruction_pattern_element`, `find_xrefs`, `find_prologues`, `find_instruction_pattern` |
+| `bb_heuristics.h` | `vtable_candidate`, `string_table_run`, `find_vtables`, `find_string_tables` |
+| `bb_dump.h` | `memory_dump_options`, `memory_dump_result`, `dump_memory` |
+| `bb_symbols.h` | `symbol_info`, `symbolize_result` |
+| `bb_disasm.h` | `instruction`, `resolve_rip_relative` |
+| `bb_vmt.h` | `vmt`, `vmt_handle` |
+| `bb_scoped_unlock.h` | `scoped_unlock` |
+| `bb_log_sink.h` | `log_level`, `log_sink`, `set_log_sink` |
+| `bb_version.h` | `bytebinder_version()`, `bytebinder_abi_revision()` |
+| `bb_init_system.h` | `static_mem`, `static_func`, `static_hook`, `init_func`, `run_init_funcs` |
+| `bb_memory_exceptions.h` | `memory_operation_exception`, `memory_error_code` |
 
 ### `bb::process`
 
