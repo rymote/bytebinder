@@ -56,6 +56,11 @@ set(BYTEBINDER_PUBLIC_HEADERS
     include/bb_chain_resolution.h
     include/bb_chain_step.h
     include/bb_code_scan.h
+    include/bb_cpu_registers.h
+    include/bb_debug_event.h
+    include/bb_debug_event_kind.h
+    include/bb_debug_register_encoding.h
+    include/bb_debugger.h
     include/bb_disasm.h
     include/bb_dump.h
     include/bb_heuristics.h
@@ -80,9 +85,19 @@ set(BYTEBINDER_PUBLIC_HEADERS
     include/bb_pattern.h
     include/bb_pch.h
     include/bb_pointer_chain.h
+    include/bb_pointer_path.h
+    include/bb_pointer_scan_options.h
+    include/bb_pointer_scanner.h
     include/bb_process.h
+    include/bb_process_entry.h
+    include/bb_process_enumeration.h
     include/bb_region_info.h
     include/bb_remote_accessor.h
+    include/bb_scan_compare.h
+    include/bb_scan_constraint.h
+    include/bb_scan_match.h
+    include/bb_scan_session.h
+    include/bb_scan_value_type.h
     include/bb_scoped_unlock.h
     include/bb_static_func.h
     include/bb_static_hook.h
@@ -91,12 +106,16 @@ set(BYTEBINDER_PUBLIC_HEADERS
     include/bb_symbol_info.h
     include/bb_symbolize_result.h
     include/bb_symbols.h
+    include/bb_thread_entry.h
+    include/bb_thread_enumeration.h
     include/bb_typed_scan.h
     include/bb_version.h
     include/bb_vmt.h
     include/bb_vmt_handle.h
     include/bb_vtable_candidate.h
     include/bb_watch_handle.h
+    include/bb_watchpoint.h
+    include/bb_watchpoint_condition.h
     include/bb_xref.h
     include/bb_xref_kind.h
     include/bytebinder.h
@@ -105,6 +124,7 @@ set(BYTEBINDER_PUBLIC_HEADERS
 set(BYTEBINDER_SOURCES
     src/bb_code_scan.cpp
     src/bb_darwin.cpp
+    src/bb_debugger.cpp
     src/bb_disasm.cpp
     src/bb_dump.cpp
     src/bb_heuristics.cpp
@@ -115,10 +135,15 @@ set(BYTEBINDER_SOURCES
     src/bb_memory_operation_exception.cpp
     src/bb_pattern.cpp
     src/bb_pointer_chain.cpp
+    src/bb_pointer_scanner.cpp
     src/bb_process.cpp
+    src/bb_process_enumeration.cpp
     src/bb_remote_accessor.cpp
+    src/bb_scan_session.cpp
+    src/bb_scan_value_type.cpp
     src/bb_scoped_unlock.cpp
     src/bb_symbols.cpp
+    src/bb_thread_enumeration.cpp
     src/bb_version.cpp
     src/bb_vmt.cpp
     src/bb_vmt_handle.cpp

@@ -55,6 +55,10 @@
 - **Disassembly**: `mem.disasm(n)` returns Zydis-decoded `bb::instruction`s — works on local and remote memory.
 - **Symbol resolution**: `process.resolve_symbol(name)` and `process.symbolize(addr)`: Linux ELF `.dynsym`/`.symtab` parser, Windows DbgHelp, macOS Mach-O `LC_SYMTAB` (including dyld shared cache images).
 - **Memory scanning and pattern matching**: IDA-style signatures with chunked-read scanning for remote targets.
+- **Progressive value scanning**: Cheat Engine-style `scan_session` with first scan (exact/range/unknown), next-scan predicates (changed/unchanged/increased/decreased/by delta), single-level undo, alignment and region/module filters, cancel flag and progress callback.
+- **Reverse pointer scanning**: `pointer_scanner` builds a slot index and finds static-based `pointer_path`s that resolve to a volatile address and survive restarts; emitted paths feed straight into `resolve_chain`/`watch_chain`.
+- **Process and thread enumeration**: `list_processes`/`find_processes_by_name` and `list_threads` across Windows, Linux, and macOS.
+- **Debugger primitives**: `debugger` offers thread suspend/resume, register read/write (`cpu_registers`), hardware watchpoints (`set_watchpoint`/`clear_watchpoint`, up to four slots), and an exception-wait loop (`attach`/`wait_for_event`/`continue_event`) that reports watchpoint hits with the faulting instruction: the core of "find what writes this address".
 - **Memory watching**: cancellable polling with RAII handles.
 - **Foreign protection changes**: `ptrace`-injected `mprotect` on Linux x86_64, aarch64, and 32-bit ARM (with multi-thread freeze); `mach_vm_protect` on a `task_for_pid` port on macOS.
 - **Robust error handling**: typed exceptions with `memory_error_code`.
@@ -112,7 +116,7 @@ target_link_libraries(my_target PRIVATE bytebinder::shared)  # or bytebinder::st
 
 ## Examples
 
-Complete, compilable programs live in [`docs/usage/`](docs/usage) (read/write, remote attach, progressive value search, xrefs + hooking, memory dumps, vtable discovery, pointer chains). Configure with `-DBYTEBINDER_BUILD_USAGE_EXAMPLES=ON` to build them.
+Complete, compilable programs live in [`docs/usage/`](docs/usage) (read/write, remote attach, progressive value search, xrefs + hooking, memory dumps, vtable discovery, pointer chains, scan sessions, reverse pointer scanning, and find-what-writes). Configure with `-DBYTEBINDER_BUILD_USAGE_EXAMPLES=ON` to build them.
 
 ### Initialization, scan, and hook
 
@@ -299,6 +303,74 @@ auto handle = target.watch_chain(
 // keep handle alive for as long as you want callbacks; ~handle stops the worker.
 ```
 
+### Progressive value scanning (scan session)
+
+```cpp
+bb::scan_session session(bb::process::current(), bb::scan_value_type::int32);
+
+session.first_scan(bb::scan_constraint::equals<int32_t>(100));   // exact
+// value drops, then settles at 80:
+session.next_scan(bb::scan_constraint::decreased());
+session.next_scan(bb::scan_constraint::equals<int32_t>(80));
+
+for (const auto& match : session.results()) {
+    std::printf("candidate at 0x%zx\n", static_cast<size_t>(match.address));
+}
+session.undo();   // one level: back to the previous survivor set
+```
+
+First scan can be exact, a range (`between`), or `first_scan_unknown()` (keep
+everything, so later next-scans compare against the recorded value). Set
+alignment, a protection/module filter, a cancel flag, or a progress callback
+before scanning.
+
+### Reverse pointer scanning
+
+```cpp
+bb::pointer_scanner scanner(bb::process::attach(target_pid));
+
+bb::pointer_scan_options options;
+options.max_depth = 4;
+options.max_offset = 0x400;
+
+for (const auto& path : scanner.find_paths(volatile_leaf_address, options)) {
+    // path.base is a static (module-relative) address; path.offsets is the walk.
+    auto resolution = scanner.target_process().resolve_chain(path.base, path.to_chain_steps());
+    // resolution.address == volatile_leaf_address
+}
+```
+
+### Find what writes an address (debugger watchpoints)
+
+```cpp
+bb::debugger debug_session(target_pid);
+debug_session.attach();
+
+const bb::watchpoint point{address, 8, bb::watchpoint_condition::write};
+for (const auto& thread : debug_session.threads()) {
+    debug_session.set_watchpoint(thread.thread_id, /*slot=*/0, point);
+}
+
+// On Linux the target is left stopped after attach; kick it off first with
+// continue_event(). On Windows and macOS the first event arrives from wait.
+while (auto event = debug_session.wait_for_event(/*timeout_ms=*/5000)) {
+    if (event->kind == bb::debug_event_kind::watchpoint_hit) {
+        std::printf("written by instruction at 0x%zx\n",
+                    static_cast<size_t>(event->registers.instruction_pointer));
+    }
+    debug_session.continue_event(*event, /*handled=*/true);
+}
+```
+
+`debugger` also exposes `suspend_thread`/`resume_thread` and
+`read_registers`/`write_registers`. Hardware watchpoints and the event loop use
+the CPU debug registers on x86/x86_64; attaching to another process needs the
+same privileges as any debugger (a parent always qualifies; otherwise
+`yama.ptrace_scope`/`CAP_SYS_PTRACE` on Linux, or root / the debugger
+entitlement on macOS). The macOS event loop (Mach exception ports) is
+compile-verified; the Windows and Linux loops are exercised end-to-end in the
+test suite.
+
 ### Capturing diagnostic logs
 
 ```cpp
@@ -426,9 +498,9 @@ if (auto resolved = current_process.resolve_symbol("memcpy")) {
 }
 
 if (auto symbolized = current_process.symbolize(some_address)) {
-    std::printf("0x%lx → %s+%lu\n",
-                some_address, symbolized->name.c_str(),
-                some_address - symbolized->address);
+    std::printf("0x%lx -> %s+%zu\n",
+                some_address, symbolized->symbol.name.c_str(),
+                symbolized->offset_from_start);
 }
 ```
 
@@ -470,6 +542,11 @@ The full surface is documented inline in `include/`. The summary below is a navi
 | `bb_pattern.h` | `pattern`, `parse_ida_pattern`, `pattern::scan_progress` |
 | `bb_pointer_chain.h` | `chain_step`, `chain_resolution`, `process::resolve_chain`, `read_chain`, `find_pointers_to`, `watch_chain` |
 | `bb_typed_scan.h` | `process::scan_value`, `scan_value_in_range`, `scan_value_with_mask` |
+| `bb_scan_session.h` | `scan_session`, `scan_session_progress` (+ `bb_scan_value_type.h`, `bb_scan_compare.h`, `bb_scan_constraint.h`, `bb_scan_match.h`) |
+| `bb_pointer_scanner.h` | `pointer_scanner`, `pointer_path`, `pointer_scan_options` |
+| `bb_process_enumeration.h` | `process_entry`, `list_processes`, `find_processes_by_name` |
+| `bb_thread_enumeration.h` | `thread_entry`, `list_threads`, `list_current_process_threads` |
+| `bb_debugger.h` | `debugger`, `cpu_registers`, `watchpoint`, `watchpoint_condition`, `debug_event`, `debug_event_kind`, `debug_register_encoding` |
 | `bb_code_scan.h` | `xref`, `xref_kind`, `instruction_pattern_element`, `find_xrefs`, `find_prologues`, `find_instruction_pattern` |
 | `bb_heuristics.h` | `vtable_candidate`, `string_table_run`, `find_vtables`, `find_string_tables` |
 | `bb_dump.h` | `memory_dump_options`, `memory_dump_result`, `dump_memory` |
