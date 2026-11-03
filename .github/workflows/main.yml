@@ -13,8 +13,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS support requires Mach VM / dyld backed accessors; tracked separately.
-        os: [windows-latest, ubuntu-latest]
+        # PolyHook only targets x86, so macOS builds on the Intel runner.
+        os: [windows-latest, ubuntu-latest, macos-15-intel]
         build_type: [Release, Debug]
         link_type: [static, shared]
     runs-on: ${{ matrix.os }}
@@ -35,6 +35,10 @@ jobs:
       - name: Install Ninja (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Install Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
 
       - name: Configure
         shell: bash
@@ -96,6 +100,12 @@ jobs:
               fi
             else
               cp "build/lib/${{ matrix.build_type }}/${{ env.PROJECT_NAME }}.lib" "${STAGE}/lib/"
+            fi
+          elif [[ "$RUNNER_OS" == "macOS" ]]; then
+            if [[ "${{ matrix.link_type }}" == "shared" ]]; then
+              cp build/lib/lib${{ env.PROJECT_NAME }}*.dylib "${STAGE}/lib/"
+            else
+              cp build/lib/lib${{ env.PROJECT_NAME }}.a "${STAGE}/lib/"
             fi
           else
             if [[ "${{ matrix.link_type }}" == "shared" ]]; then

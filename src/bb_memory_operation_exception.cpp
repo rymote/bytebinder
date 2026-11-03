@@ -2,7 +2,7 @@
  * bytebinder - A C++ Library for Low-Level Memory Manipulation
  *
  * Authors: Péter Marton, Jovan Ivanovic
- * License: MIT
+ * License: BSD 3-Clause
  *
  * This file is part of bytebinder, a powerful tool for reading, writing, hooking, and manipulating memory addresses.
  *
@@ -16,7 +16,7 @@
  * of, or in connection with the software or the use or other dealings in the software.
  */
 
-#include "bb_memory_exceptions.h"
+#include "bb_memory_operation_exception.h"
 
 namespace bytebinder {
     memory_operation_exception::memory_operation_exception(const std::string &message, memory_error_code errorCode)

@@ -2,7 +2,7 @@
  * bytebinder - A C++ Library for Low-Level Memory Manipulation
  *
  * Authors: Péter Marton, Jovan Ivanovic
- * License: MIT
+ * License: BSD 3-Clause
  */
 
 #include "bb_version.h"
@@ -12,13 +12,15 @@
 #endif
 
 namespace {
-    // Bump whenever any exported struct/class layout changes. Revision 1 is
-    // the baseline that snapshots the public surface as of this commit:
-    // mem, process, memory_accessor, region_info, module_info, symbol_info,
-    // symbolize_result, scan_result, module_section, instruction, pattern,
-    // log_sink. Future tasks (10, 13) will add more types but the baseline
-    // does not need to be re-bumped within this single-commit work cycle.
-    constexpr uint32_t kAbiRevision = 1;
+    // Bump whenever any exported struct/class layout changes.
+    // Revision 1: baseline (mem, process, memory_accessor, region_info,
+    //             module_info, symbol_info, symbolize_result, scan_result,
+    //             module_section, instruction, pattern, log_sink).
+    // Revision 2: v0.3 additions (xref, instruction_pattern_element,
+    //             vtable_candidate, string_table_run, memory_dump_options,
+    //             memory_dump_result, chain_step, chain_resolution) and the
+    //             new process member functions that use them.
+    constexpr uint32_t kAbiRevision = 2;
 }
 
 extern "C" const char* bytebinder_version(void) {

@@ -9,6 +9,7 @@
 // (typically: same UID OR CAP_SYS_PTRACE).
 
 #include <bytebinder.h>
+#include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
 
@@ -20,7 +21,7 @@ int main(int argc, char** argv) {
     auto target = bb::process::attach(static_cast<uint32_t>(std::atoi(argv[1])));
     auto first = target.scan(argv[2]);
     if (first.valid()) {
-        std::printf("first match at 0x%lx\n", first.address);
+        std::printf("first match at 0x%" PRIxPTR "\n",first.address);
     } else {
         std::printf("no match\n");
     }

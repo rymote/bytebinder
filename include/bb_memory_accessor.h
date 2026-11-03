@@ -2,12 +2,14 @@
  * bytebinder - A C++ Library for Low-Level Memory Manipulation
  *
  * Authors: Péter Marton, Jovan Ivanovic
- * License: MIT
+ * License: BSD 3-Clause
  */
 
 #pragma once
 
 #include "bb_pch.h"
+#include "bb_module_info.h"
+#include "bb_region_info.h"
 
 #include <optional>
 #include <string>
@@ -26,23 +28,6 @@ namespace bytebinder {
         constexpr int write     = 2;
         constexpr int execute   = 4;
     }
-
-    /// @brief One mapped region: address range, protection bits, and the backing
-    ///        file path (empty for anonymous mappings).
-    struct BYTEBINDER_API region_info {
-        uintptr_t base = 0;
-        size_t size = 0;
-        int protection = 0;
-        std::string mapped_path;
-    };
-
-    /// @brief One loaded module: short name, full path, load base, and size.
-    struct BYTEBINDER_API module_info {
-        std::string name;
-        std::string path;
-        uintptr_t base = 0;
-        size_t size = 0;
-    };
 
     /**
      * @brief Abstract memory access strategy. Implementations:
@@ -88,7 +73,8 @@ namespace bytebinder {
          *        the prior protection so callers can restore it.
          * @note On Linux, remote_accessor's set_protection requires ptrace
          *       attach (root or PTRACE_SCOPE allowance). On Windows it requires
-         *       PROCESS_VM_OPERATION on the target handle.
+         *       PROCESS_VM_OPERATION on the target handle. On macOS it requires
+         *       a task port (root or the debugger entitlement).
          * @warning Not safe to call concurrently with overlapping write() on
          *          the same pages.
          */

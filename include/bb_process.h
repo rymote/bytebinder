@@ -2,7 +2,7 @@
  * bytebinder - A C++ Library for Low-Level Memory Manipulation
  *
  * Authors: Péter Marton, Jovan Ivanovic
- * License: MIT
+ * License: BSD 3-Clause
  */
 
 #pragma once
@@ -56,7 +56,9 @@ namespace bytebinder {
      *
      * @note On Windows, symbol resolution and remote-process protection changes
      *       depend on DbgHelp + PDBs and admin privileges respectively. On
-     *       Linux, remote protection changes require ptrace.
+     *       Linux, remote protection changes require ptrace. On macOS,
+     *       attaching to another process requires root or the
+     *       com.apple.security.cs.debugger entitlement for task_for_pid.
      */
     class BYTEBINDER_API process {
     public:

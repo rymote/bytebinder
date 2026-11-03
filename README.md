@@ -53,10 +53,10 @@
 - **Memory address handling**: fluent offset math, RIP-relative arithmetic, typed accessor-aware reads and writes (`read<T>`, `write<T>`, `read_bytes`, `write_bytes`).
 - **Hooking and patching**: PolyHook 2.0-backed function detours, `nop`/`ret`/`jmp`/`call` primitives, declarative `bb::static_hook` registrations, `bb::vmt` vtable patching.
 - **Disassembly**: `mem.disasm(n)` returns Zydis-decoded `bb::instruction`s — works on local and remote memory.
-- **Symbol resolution**: `process.resolve_symbol(name)` and `process.symbolize(addr)` — Linux ELF `.dynsym`/`.symtab` parser, Windows DbgHelp.
+- **Symbol resolution**: `process.resolve_symbol(name)` and `process.symbolize(addr)`: Linux ELF `.dynsym`/`.symtab` parser, Windows DbgHelp, macOS Mach-O `LC_SYMTAB` (including dyld shared cache images).
 - **Memory scanning and pattern matching**: IDA-style signatures with chunked-read scanning for remote targets.
 - **Memory watching**: cancellable polling with RAII handles.
-- **Foreign protection changes**: `ptrace`-injected `mprotect` on Linux x86_64, aarch64, and 32-bit ARM (with multi-thread freeze).
+- **Foreign protection changes**: `ptrace`-injected `mprotect` on Linux x86_64, aarch64, and 32-bit ARM (with multi-thread freeze); `mach_vm_protect` on a `task_for_pid` port on macOS.
 - **Robust error handling**: typed exceptions with `memory_error_code`.
 
 ### Platform support
@@ -66,7 +66,7 @@
 | Windows (MSVC, x64) | supported, exercised in CI |
 | Linux (x86_64) | supported, exercised in CI (Debug + Release, ASan + UBSan) |
 | Linux (aarch64, 32-bit ARM) | code paths cross-compile-checked in CI; runtime tested on real hardware/QEMU only |
-| macOS | not yet — Mach VM / dyld backed accessors are tracked separately |
+| macOS (x86_64) | supported via Mach VM + dyld accessors; CI job on the `macos-15-intel` runner. Attaching to another process needs root or the `com.apple.security.cs.debugger` entitlement. Apple Silicon only through Rosetta 2, because PolyHook is x86-only. |
 
 ## Installation
 
@@ -101,6 +101,7 @@ The Catch2 test runner builds as `bytebinder_tests`; run with
 | `BYTEBINDER_BUILD_SHARED` | `ON` | Build the shared library target. |
 | `BYTEBINDER_BUILD_TESTS` | `ON` (top-level) | Build the Catch2 test runner. |
 | `BYTEBINDER_ENABLE_SANITIZERS` | `OFF` | Compile with AddressSanitizer + UBSan in Debug. |
+| `BYTEBINDER_BUILD_USAGE_EXAMPLES` | `OFF` | Compile the programs in `docs/usage/` as smoke targets. |
 
 ### Consume from another CMake project
 
@@ -110,6 +111,8 @@ target_link_libraries(my_target PRIVATE bytebinder::shared)  # or bytebinder::st
 ```
 
 ## Examples
+
+Complete, compilable programs live in [`docs/usage/`](docs/usage) (read/write, remote attach, progressive value search, xrefs + hooking, memory dumps, vtable discovery, pointer chains). Configure with `-DBYTEBINDER_BUILD_USAGE_EXAMPLES=ON` to build them.
 
 ### Initialization, scan, and hook
 
@@ -453,7 +456,7 @@ int main() {
 
 ## API reference
 
-The full surface is documented inline in `include/`. The summary below is a navigation aid.
+The full surface is documented inline in `include/`. The summary below is a navigation aid. Every public type also lives in its own header named after it (for example `bb_xref.h`, `bb_chain_step.h`, `bb_hook_handle.h`); the feature headers listed here include those, so existing includes keep working.
 
 ### Headers at a glance
 

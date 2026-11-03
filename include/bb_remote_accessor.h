@@ -2,7 +2,7 @@
  * bytebinder - A C++ Library for Low-Level Memory Manipulation
  *
  * Authors: Péter Marton, Jovan Ivanovic
- * License: MIT
+ * License: BSD 3-Clause
  */
 
 #pragma once
@@ -12,8 +12,10 @@
 namespace bytebinder {
     /**
      * @brief Out-of-process memory accessor. Read/write goes through
-     *        Read/WriteProcessMemory (Windows) or process_vm_readv/writev (Linux).
-     *        Protection changes require platform privileges (admin / ptrace).
+     *        Read/WriteProcessMemory (Windows), process_vm_readv/writev (Linux),
+     *        or mach_vm_read_overwrite/mach_vm_write on a task_for_pid port
+     *        (macOS). Protection changes require platform privileges
+     *        (admin / ptrace / root or the debugger entitlement).
      */
     class BYTEBINDER_API remote_accessor : public memory_accessor {
     public:
@@ -39,6 +41,8 @@ namespace bytebinder {
         uint32_t target_pid = 0;
 #if defined(_WIN32)
         void* process_handle = nullptr;
+#elif defined(__APPLE__)
+        unsigned int task_port = 0; ///< mach_port_t; MACH_PORT_NULL when task_for_pid was refused.
 #endif
     };
 }

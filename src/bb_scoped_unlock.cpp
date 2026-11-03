@@ -2,7 +2,7 @@
  * bytebinder - A C++ Library for Low-Level Memory Manipulation
  *
  * Authors: Péter Marton, Jovan Ivanovic
- * License: MIT
+ * License: BSD 3-Clause
  *
  * This file is part of bytebinder, a powerful tool for reading, writing, hooking, and manipulating memory addresses.
  *
@@ -18,12 +18,14 @@
 
 #include "bb_scoped_unlock.h"
 
-#if !defined(_WIN32)
+#if defined(__APPLE__)
+    #include "bb_darwin.h"
+#elif !defined(_WIN32)
     #include <cstdio>
 #endif
 
 namespace bytebinder {
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__APPLE__)
     namespace {
         int read_original_protection(uintptr_t query_address) {
             FILE* maps_file = std::fopen("/proc/self/maps", "r");
@@ -77,6 +79,30 @@ namespace bytebinder {
         scoped_unlock::~scoped_unlock() {
             DWORD discarded = 0;
             if (!VirtualProtect(address, length, original_protection, &discarded)) {
+                std::cerr << "Failed to restore original memory protection." << std::endl;
+            }
+        }
+    #elif defined(__APPLE__)
+        // mprotect cannot add write access to __TEXT (its maximum protection is
+        // r-x), so go through mach_vm_protect with VM_PROT_COPY instead.
+        scoped_unlock::scoped_unlock(uint64_t target_address, size_t target_length) {
+            const uintptr_t page_size = static_cast<uintptr_t>(vm_page_size);
+            const uintptr_t aligned_start = static_cast<uintptr_t>(target_address) & ~(page_size - 1);
+            const uintptr_t aligned_end =
+                (static_cast<uintptr_t>(target_address) + target_length + page_size - 1) & ~(page_size - 1);
+
+            address = reinterpret_cast<void*>(aligned_start);
+            length = aligned_end - aligned_start;
+            original_protection = darwin::change_protection(
+                mach_task_self(), aligned_start, length,
+                protection::read | protection::write | protection::execute);
+        }
+
+        scoped_unlock::~scoped_unlock() {
+            try {
+                darwin::change_protection(mach_task_self(), reinterpret_cast<uintptr_t>(address),
+                                          length, original_protection);
+            } catch (const memory_operation_exception&) {
                 std::cerr << "Failed to restore original memory protection." << std::endl;
             }
         }

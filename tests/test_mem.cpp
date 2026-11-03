@@ -1,0 +1,365 @@
+#include <catch2/catch_test_macros.hpp>
+#include "bytebinder.h"
+#include "test_support.h"
+#include "fake_remote_accessor.h"
+
+TEST_CASE("Initialization and address calculation", "[mem]") {
+    bb::mem::init(nullptr, reinterpret_cast<uintptr_t>(buffer), sizeof(buffer));
+    bb::mem memory(reinterpret_cast<void*>(buffer));
+
+    SECTION("init function sets base correctly") {
+        REQUIRE(bb::mem::storage.base == reinterpret_cast<uintptr_t>(buffer));
+        REQUIRE(bb::mem::storage.size == sizeof(buffer));
+    }
+
+    uint32_t expectedValue = 123456789;
+    *reinterpret_cast<uint32_t*>(buffer + 100) = expectedValue;
+
+    SECTION("add method calculates new address correctly") {
+        auto offsettedMemory = memory.add(100);
+        auto retrievedValue = *offsettedMemory.get<uint32_t*>();
+        REQUIRE(retrievedValue == expectedValue);
+    }
+}
+
+TEST_CASE("RIP-relative address calculation", "[mem]") {
+    bb::mem::init(nullptr, reinterpret_cast<uintptr_t>(buffer), sizeof(buffer));
+    bb::mem memory(reinterpret_cast<void*>(buffer + 100));
+
+    int32_t relativeOffset = 50;
+    *reinterpret_cast<int32_t*>(buffer + 100 + 3) = relativeOffset;
+
+    uint32_t knownValue = 123456789;
+    auto targetAddress = reinterpret_cast<uintptr_t>(buffer + 100 + 3 + 4 + relativeOffset);
+    *reinterpret_cast<uint32_t*>(targetAddress) = knownValue;
+
+    bb::mem calculatedAddress = memory.rip(3);
+
+    SECTION("Calculates correct RIP-relative address and retrieves correct value") {
+        uint32_t retrievedValue = *calculatedAddress.get<uintptr_t*>();
+        REQUIRE(retrievedValue == knownValue);
+    }
+}
+
+TEST_CASE("Memory operations using mem.get and mem.set", "[mem]") {
+    bb::mem::init(nullptr, reinterpret_cast<uintptr_t>(buffer), sizeof(buffer));
+    bb::mem memory(reinterpret_cast<void*>(buffer));
+
+    memset(buffer, 0, sizeof(buffer));
+
+    SECTION("Set and Get integer values") {
+        uint32_t setValue = 0x87654321;
+
+        auto mem1 = memory.add(30);
+        mem1.set(setValue);
+
+        auto mem2 = memory.add(30);
+        auto getValue = *mem2.get<uint32_t*>();
+
+        REQUIRE(getValue == setValue);
+    }
+
+    SECTION("Set and Get byte values") {
+        uint8_t byteValue = 0xAB;
+        memory.add(15).set(byteValue);
+        auto readByte = *memory.add(15).get<uint8_t*>();
+        REQUIRE(readByte == byteValue);
+    }
+
+    SECTION("Set and Get for multiple data types and sizes") {
+        uint64_t largeValue = 0xCAFEBABEDEADBEEF;
+        memory.add(40).set(largeValue);
+        REQUIRE(*memory.add(40).get<uint64_t*>() == largeValue);
+    }
+
+    SECTION("Set and Get across various offsets") {
+        for (int offset = 0; offset < 100; offset += 4) {
+            uint32_t value = static_cast<uint32_t>(offset) * 5;
+            memory.add(offset).set(value);
+            REQUIRE(*memory.add(offset).get<uint32_t*>() == value);
+        }
+    }
+}
+
+
+TEST_CASE("NOP operation", "[mem]") {
+    memset(buffer, 0, sizeof(buffer));
+    bb::mem memory(reinterpret_cast<void*>(buffer + 50));
+    memory.nop(10);
+
+    SECTION("Buffer contains NOPs at correct position") {
+        for (int i = 0; i < 10; i++) {
+            REQUIRE(buffer[50 + i] == 0x90);
+        }
+    }
+}
+
+TEST_CASE("RET operation sets correct opcode", "[mem]") {
+    bb::mem memory(reinterpret_cast<void*>(buffer));
+    memory.ret();
+
+    REQUIRE(buffer[0] == 0xC3);
+}
+
+TEST_CASE("JMP and CALL operations", "[mem]") {
+    bb::mem memory(reinterpret_cast<void*>(buffer));
+    uintptr_t fake_function = reinterpret_cast<uintptr_t>(buffer) + 200;
+
+    SECTION("JMP writes correct opcode and address") {
+        memory.jmp(fake_function);
+        REQUIRE(buffer[0] == 0x48);
+        REQUIRE(buffer[1] == 0xB8);
+        REQUIRE(*reinterpret_cast<uintptr_t*>(buffer + 2) == fake_function);
+        REQUIRE(buffer[10] == 0xFF);
+        REQUIRE(buffer[11] == 0xE0);
+    }
+
+    SECTION("CALL writes correct opcode and relative address") {
+        memory.call(fake_function);
+        REQUIRE(buffer[0] == 0xE8);
+        int32_t rel_address = *reinterpret_cast<int32_t*>(buffer + 1);
+        REQUIRE(reinterpret_cast<uintptr_t>(buffer + 5 + rel_address) == fake_function);
+    }
+}
+TEST_CASE("Search for pattern in memory and returns correct position", "[mem]") {
+    memset(buffer, 0, sizeof(buffer));
+    uint8_t knownPattern[] = { 0xF2, 0xAF, 0xDF, 0x1F, 0x9F, 0xFB, 0x12 };
+    size_t patternStartOffset = 6;
+    std::memcpy(&buffer[patternStartOffset], knownPattern, sizeof(knownPattern));
+
+    bb::mem::init(nullptr, reinterpret_cast<uintptr_t>(buffer), sizeof(buffer));
+
+    auto result = bb::mem::scan("AF ? 1F 9F FB");
+
+    uint8_t expectedByte = buffer[patternStartOffset + 1];
+    REQUIRE(*result.get<uint8_t*>() == expectedByte);
+
+    SECTION("Pattern scanning correctly identifies memory locations") {
+        REQUIRE(*result.get<uint8_t*>() == 0xAF);
+    }
+}
+
+void (*OrigFunction)(int) = nullptr;
+void HookFunction(int value){
+    OrigFunction(5);
+}
+
+int testValue = 0;
+NOINLINE void TestHookFunction(int value) {
+    volatile int padding[16] = {0};
+    for (int padding_index = 0; padding_index < 16; ++padding_index) {
+        padding[padding_index] = value;
+    }
+    testValue = value;
+    (void)padding;
+}
+
+TEST_CASE("Function hooking and behavior validation") {
+    SECTION("Original function should modify global state correctly") {
+        TestHookFunction(2);
+        REQUIRE(testValue == 2);
+    }
+
+    if (!OrigFunction) {
+        bb::mem(reinterpret_cast<void*>(&TestHookFunction)).hook(HookFunction, &OrigFunction);
+    }
+
+    SECTION("Original function pointer should call hooked function") {
+        OrigFunction(10);
+        REQUIRE(testValue == 10);
+    }
+
+    SECTION("Original function should be called with altered argument after hooking") {
+        TestHookFunction(10);
+        REQUIRE(testValue == 5);
+    }
+}
+
+TEST_CASE("Memory comparison validation", "[mem]") {
+    memset(buffer, 0, sizeof(buffer));
+    const char pattern[] = "HelloWorld";
+    std::memcpy(buffer + 100, pattern, strlen(pattern));
+    bb::mem::init(nullptr, reinterpret_cast<uintptr_t>(buffer), sizeof(buffer));
+    bb::mem memory(reinterpret_cast<void*>(buffer + 100));
+
+    SECTION("Correctly compares identical memory content") {
+        REQUIRE(memory.compare(pattern, strlen(pattern)) == true);
+    }
+
+    SECTION("Correctly identifies non-identical memory content") {
+        const char wrongPattern[] = "Goodbye";
+        REQUIRE(memory.compare(wrongPattern, strlen(wrongPattern)) == false);
+    }
+
+    SECTION("Correctly compares partial memory content") {
+        REQUIRE(memory.compare("Hello", 5) == true);
+    }
+}
+
+int testInitValue = 5;
+static bb::init_func InitFunc([] {
+    testInitValue = 10;
+});
+
+TEST_CASE("Initializer system", "[mem]") {
+    SECTION("Initial value of the test variable is correctly set") {
+        REQUIRE(testInitValue == 5);
+    }
+    bb::run_init_funcs();
+    SECTION("Test variable has the correct value after init funcs ran") {
+        REQUIRE(testInitValue == 10);
+    }
+}
+
+TEST_CASE("mem::find locates a buffer and reports misses", "[mem][find]") {
+    memset(buffer, 0xAA, sizeof(buffer));
+    const uint8_t needle[] = {0x01, 0x02, 0x03, 0x04};
+    constexpr size_t needle_offset = 200;
+    std::memcpy(buffer + needle_offset, needle, sizeof(needle));
+
+    bb::mem::init(nullptr, reinterpret_cast<uintptr_t>(buffer), sizeof(buffer));
+    const bb::mem haystack(reinterpret_cast<void*>(buffer));
+
+    SECTION("Returns the address of the first match") {
+        const bb::mem hit = haystack.find(needle, sizeof(needle));
+        REQUIRE(hit.valid());
+        REQUIRE(hit.address == reinterpret_cast<uintptr_t>(buffer + needle_offset));
+    }
+
+    SECTION("Returns invalid mem when the buffer is absent") {
+        const uint8_t missing[] = {0x99, 0x98, 0x97, 0x96};
+        const bb::mem hit = haystack.find(missing, sizeof(missing));
+        REQUIRE_FALSE(hit.valid());
+    }
+
+    SECTION("Returns invalid mem for zero-size buffer") {
+        const bb::mem hit = haystack.find(needle, 0);
+        REQUIRE_FALSE(hit.valid());
+    }
+}
+
+TEST_CASE("mem::alloc returns non-overlapping ranges and respects the heap", "[mem][alloc]") {
+    bb::mem::init(nullptr, reinterpret_cast<uintptr_t>(buffer), sizeof(buffer));
+
+    SECTION("Successive allocations do not overlap") {
+        const bb::mem first = bb::mem::alloc(32);
+        const bb::mem second = bb::mem::alloc(32);
+        REQUIRE(first.valid());
+        REQUIRE(second.valid());
+        REQUIRE(second.address >= first.address + 32);
+    }
+
+    SECTION("Out-of-heap allocations throw") {
+        REQUIRE_THROWS_AS(bb::mem::alloc(8 * 1024 * 1024),
+                          bb::memory_operation_exception);
+    }
+}
+
+TEST_CASE("Dry-run mode disables write helpers", "[mem][dry_run]") {
+    memset(buffer, 0, sizeof(buffer));
+    bb::mem::set_dry_run(true);
+    bb::mem(reinterpret_cast<void*>(buffer)).ret();
+    REQUIRE(buffer[0] == 0);
+    bb::mem(reinterpret_cast<void*>(buffer)).nop(4);
+    REQUIRE(buffer[0] == 0);
+    bb::mem::set_dry_run(false);
+    bb::mem(reinterpret_cast<void*>(buffer)).ret();
+    REQUIRE(buffer[0] == 0xC3);
+}
+
+TEST_CASE("watch_handle detects writes and stops cleanly", "[mem][watch]") {
+    memset(buffer, 0, sizeof(buffer));
+    std::atomic<int> change_count{0};
+    bb::mem watched(reinterpret_cast<void*>(buffer + 256));
+    auto handle = watched.watch(8,
+        [&change_count]() { change_count.fetch_add(1); },
+        std::chrono::milliseconds{20});
+
+    REQUIRE(handle.active());
+
+    for (int round = 0; round < 5; ++round) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        ++(*reinterpret_cast<int*>(buffer + 256));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+
+    handle.stop();
+    REQUIRE_FALSE(handle.active());
+    REQUIRE(change_count.load() >= 1);
+}
+
+TEST_CASE("mem::scan rejects malformed patterns when not in dry-run", "[mem][scan]") {
+    bb::mem::init(nullptr, reinterpret_cast<uintptr_t>(buffer), sizeof(buffer));
+    bb::mem::set_dry_run(false);
+
+    SECTION("Invalid hex digit throws") {
+        REQUIRE_THROWS_AS(bb::mem::scan("ZZ"),
+                          bb::memory_operation_exception);
+    }
+
+    SECTION("Empty pattern throws") {
+        REQUIRE_THROWS_AS(bb::mem::scan(""),
+                          bb::memory_operation_exception);
+    }
+
+    SECTION("Pattern not present throws") {
+        memset(buffer, 0xAA, sizeof(buffer));
+        REQUIRE_THROWS_AS(bb::mem::scan("DE AD BE EF C0 DE"),
+                          bb::memory_operation_exception);
+    }
+}
+
+TEST_CASE("unhook removes an installed detour", "[mem][hook][unhook]") {
+    if (!OrigFunction) {
+        bb::mem(reinterpret_cast<void*>(&TestHookFunction))
+            .hook(HookFunction, &OrigFunction);
+    }
+    bb::mem::unhook_all();
+    TestHookFunction(7);
+    REQUIRE(testValue == 7);
+    OrigFunction = nullptr;
+}
+
+TEST_CASE("get<T>() rejects a remote-bound mem", "[mem][remote][safety]") {
+    bb::local_accessor& backing = bb::local_accessor::instance();
+    bb::mem local_bound(reinterpret_cast<void*>(buffer));
+    REQUIRE_NOTHROW(local_bound.get<uint8_t*>());
+
+    fake_remote_accessor remote_stub;
+
+    bb::mem remote_bound(reinterpret_cast<uintptr_t>(buffer), &remote_stub);
+    REQUIRE_THROWS_AS(remote_bound.get<uint8_t*>(),
+                      bb::memory_operation_exception);
+    (void)backing;
+}
+
+TEST_CASE("mem::read_cstring reads NUL-terminated string", "[mem][string]") {
+    // Buffer is sized larger than the chunked reader's 256-byte window so the
+    // first chunk read stays inside the allocation even on sanitizer builds
+    // that add redzones around tightly-sized arrays.
+    static char sample[512] = {};
+    std::memcpy(sample, "hello bytebinder", 16);
+    bb::mem at_sample(reinterpret_cast<void*>(sample));
+    auto result = at_sample.read_cstring();
+    REQUIRE(result.has_value());
+    REQUIRE(*result == "hello bytebinder");
+}
+
+TEST_CASE("mem::read_cstring honors max_length", "[mem][string]") {
+    static char sample[512] = {};
+    std::memcpy(sample, "abcdefghijklmnop", 16);
+    bb::mem at_sample(reinterpret_cast<void*>(sample));
+    auto result = at_sample.read_cstring(5);
+    REQUIRE(result.has_value());
+    REQUIRE(*result == "abcde");
+}
+
+TEST_CASE("mem::read_wstring reads UTF-16 sequence", "[mem][string]") {
+    static char16_t sample[512] = {};
+    static const char16_t literal[] = u"wide test";
+    std::memcpy(sample, literal, sizeof(literal));
+    bb::mem at_sample(reinterpret_cast<void*>(sample));
+    auto result = at_sample.read_wstring();
+    REQUIRE(result.has_value());
+    REQUIRE(*result == std::u16string(u"wide test"));
+}

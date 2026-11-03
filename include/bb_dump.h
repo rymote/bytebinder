@@ -2,7 +2,7 @@
  * bytebinder - A C++ Library for Low-Level Memory Manipulation
  *
  * Authors: Péter Marton, Jovan Ivanovic
- * License: MIT
+ * License: BSD 3-Clause
  */
 
 #pragma once
@@ -24,6 +24,8 @@
  */
 
 #include "bb_api.h"
+#include "bb_memory_dump_options.h"
+#include "bb_memory_dump_result.h"
 
 #include <cstddef>
 #include <filesystem>
@@ -31,27 +33,6 @@
 namespace bytebinder {
 
     class process;
-
-    /// @brief Inclusion filters and per-region size bounds for dump_memory.
-    struct BYTEBINDER_API memory_dump_options {
-        bool include_executable = true;
-        bool include_writable_data = true;
-        bool include_readonly_data = true;
-        bool include_anonymous_mappings = false;
-        bool include_special_mappings = false;
-
-        size_t min_region_size = 0;
-        size_t max_region_size = 0;
-    };
-
-    /// @brief Aggregate result of a dump pass: counts plus the path to the
-    ///        manifest file (which is written last).
-    struct BYTEBINDER_API memory_dump_result {
-        size_t regions_dumped = 0;
-        size_t regions_skipped = 0;
-        size_t total_bytes_written = 0;
-        std::filesystem::path manifest_path;
-    };
 
     /// @brief Free-function backend for process::dump_memory.
     BYTEBINDER_API memory_dump_result dump_memory_for_process(

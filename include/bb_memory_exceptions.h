@@ -2,7 +2,7 @@
  * bytebinder - A C++ Library for Low-Level Memory Manipulation
  *
  * Authors: Péter Marton, Jovan Ivanovic
- * License: MIT
+ * License: BSD 3-Clause
  *
  * This file is part of bytebinder, a powerful tool for reading, writing, hooking, and manipulating memory addresses.
  *
@@ -19,74 +19,9 @@
 #pragma once
 
 #include "bb_pch.h"
+#include "bb_memory_error_code.h"
+#include "bb_memory_operation_exception.h"
 
 namespace bytebinder {
-    /**
-     * @brief Enumeration of error codes for memory operation exceptions.
-     */
-    enum class memory_error_code {
-        // Initialization Errors
-        INITIALIZATION_FAILED = 101,
-        MODULE_INFO_RETRIEVAL_FAILED = 102,
-        BASE_ADDRESS_CALCULATION_ERROR = 103,
 
-        // Memory Allocation Errors
-        ALLOCATION_FAILED = 201,
-        DEALLOCATION_FAILED = 202,
-        HEAP_INITIALIZATION_FAILED = 203,
-
-        // Memory Operation Errors
-        PROTECTION_CHANGE_FAILED = 301,
-        READ_FAILED = 302,
-        WRITE_FAILED = 303,
-        PATTERN_MATCH_FAILED = 304,
-
-        // Hooking Errors
-        HOOK_INSTALLATION_FAILED = 401,
-        HOOK_REMOVAL_FAILED = 402,
-        TRAMPOLINE_SETUP_FAILED = 403,
-
-        // Aseembly Errors
-        ASSEMBLY_FAILED = 501,
-
-        // Miscellaneous Errors
-        UNKNOWN_ERROR = 601,
-        INVALID_OPERATION = 602
-    };
-
-    /**
-     * @brief Exception class for memory manipulation errors.
-     *
-     * This class encapsulates errors that occur during memory operations, providing detailed error messages
-     * and potentially additional context or error codes.
-     */
-    class BYTEBINDER_API memory_operation_exception : public std::exception {
-    private:
-        std::string message; ///< Detailed error message.
-        memory_error_code errorCode; ///< Error code enum.
-
-    public:
-        /**
-         * @brief Constructor for the exception with a message and an optional error code.
-         *
-         * @param message The error message describing what went wrong.
-         * @param errorCode The error code enum for additional context.
-         */
-        memory_operation_exception(const std::string &message,
-                                   memory_error_code errorCode = memory_error_code::UNKNOWN_ERROR);
-
-        /**
-         * @brief Returns the error message associated with the exception.
-         *
-         * @return The error message.
-         */
-        virtual const char *what() const noexcept override;
-
-        /**
-         * @brief Retrieves the error code associated with the exception.
-         *
-         * @return The error code enum value.
-         */
-        memory_error_code get_error_code() const noexcept;
-    };
 }

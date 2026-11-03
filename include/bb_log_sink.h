@@ -2,12 +2,13 @@
  * bytebinder - A C++ Library for Low-Level Memory Manipulation
  *
  * Authors: Péter Marton, Jovan Ivanovic
- * License: MIT
+ * License: BSD 3-Clause
  */
 
 #pragma once
 
 #include "bb_api.h"
+#include "bb_log_level.h"
 
 #include <functional>
 #include <string_view>
@@ -19,13 +20,6 @@
  *        arbitrary library threads.
  */
 namespace bytebinder {
-    /// @brief Severity of a log message routed through the installed sink.
-    enum class log_level {
-        debug,
-        info,
-        warn,
-        error
-    };
 
     /**
      * @brief Sink callback signature. The library guarantees the

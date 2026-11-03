@@ -2,7 +2,7 @@
  * bytebinder - A C++ Library for Low-Level Memory Manipulation
  *
  * Authors: Péter Marton, Jovan Ivanovic
- * License: MIT
+ * License: BSD 3-Clause
  *
  * This file is part of bytebinder, a powerful tool for reading, writing, hooking, and manipulating memory addresses.
  *
@@ -18,6 +18,13 @@
 
 #include "bb_mem.h"
 #include <polyhook2/ErrorLog.hpp>
+
+#if defined(__APPLE__)
+    #include "bb_darwin.h"
+
+    #include <mach-o/dyld.h>
+    #include <mach-o/loader.h>
+#endif
 
 namespace bytebinder {
     namespace {
@@ -81,6 +88,30 @@ namespace bytebinder {
 
             mem::storage.base = module_handle;
             mem::storage.size = module_info.SizeOfImage;
+        #elif defined(__APPLE__)
+            std::optional<bytebinder::module_info> resolved_module;
+            if (module == nullptr) {
+                for (uint32_t image_index = 0; image_index < _dyld_image_count(); ++image_index) {
+                    const mach_header* image_header = _dyld_get_image_header(image_index);
+                    if (image_header == nullptr || image_header->filetype != MH_EXECUTE) {
+                        continue;
+                    }
+                    const char* image_name = _dyld_get_image_name(image_index);
+                    resolved_module = darwin::describe_image(local_accessor::instance(),
+                                                             reinterpret_cast<uintptr_t>(image_header),
+                                                             image_name ? image_name : "");
+                    break;
+                }
+            } else {
+                resolved_module = local_accessor::instance().find_module(module);
+            }
+            if (!resolved_module.has_value()) {
+                throw memory_operation_exception(
+                    std::string("Failed to find module: ") + (module ? module : "(main executable)"),
+                    memory_error_code::MODULE_INFO_RETRIEVAL_FAILED);
+            }
+            mem::storage.base = resolved_module->base;
+            mem::storage.size = resolved_module->size;
         #else
             struct iteration_state {
                 const char* requested_module_name;
@@ -205,10 +236,6 @@ namespace bytebinder {
 
     bool mem::is_dry_run() {
         return dry_run_mode.load(std::memory_order_acquire);
-    }
-
-    bool hook_handle::unhook() {
-        return detour_pointer != nullptr && mem::unhook(*this);
     }
 
     bool mem::unhook(hook_handle& handle) {
@@ -375,7 +402,15 @@ namespace bytebinder {
     namespace {
         constexpr int64_t REL32_RANGE_LIMIT = 0x7FFF0000LL;
 
-#if !defined(_WIN32)
+#if defined(__APPLE__)
+        std::vector<std::pair<uintptr_t, uintptr_t>> read_process_mappings() {
+            std::vector<std::pair<uintptr_t, uintptr_t>> mappings;
+            for (const auto& region : local_accessor::instance().regions()) {
+                mappings.emplace_back(region.base, region.base + region.size);
+            }
+            return mappings;
+        }
+#elif !defined(_WIN32)
         std::vector<std::pair<uintptr_t, uintptr_t>> read_process_mappings() {
             std::vector<std::pair<uintptr_t, uintptr_t>> mappings;
             FILE* maps_file = std::fopen("/proc/self/maps", "r");
@@ -469,11 +504,18 @@ namespace bytebinder {
         auto mappings = read_process_mappings();
         std::sort(mappings.begin(), mappings.end());
 
+        // Without MAP_FIXED_NOREPLACE (macOS) the address is only a hint; the
+        // mismatch check below rejects a mapping placed elsewhere.
+#if defined(MAP_FIXED_NOREPLACE)
+        constexpr int placement_flags = MAP_FIXED_NOREPLACE;
+#else
+        constexpr int placement_flags = 0;
+#endif
         auto try_mmap_at = [&](uintptr_t candidate_address) -> uintptr_t {
             void* allocated = mmap(reinterpret_cast<void*>(candidate_address),
                                     aligned_size,
                                     PROT_READ | PROT_WRITE | PROT_EXEC,
-                                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,
+                                    MAP_PRIVATE | MAP_ANONYMOUS | placement_flags,
                                     -1, 0);
             if (allocated == MAP_FAILED) {
                 return 0;

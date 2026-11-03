@@ -2,7 +2,7 @@
  * bytebinder - A C++ Library for Low-Level Memory Manipulation
  *
  * Authors: Péter Marton, Jovan Ivanovic
- * License: MIT
+ * License: BSD 3-Clause
  */
 
 #pragma once
@@ -27,6 +27,9 @@
  */
 
 #include "bb_api.h"
+#include "bb_instruction_pattern_element.h"
+#include "bb_xref.h"
+#include "bb_xref_kind.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -39,32 +42,6 @@
 namespace bytebinder {
 
     class process;
-
-    /// @brief Category of cross-reference reported by find_xrefs.
-    enum class xref_kind {
-        call,
-        jmp_uncond,
-        jmp_cond,
-        lea_rip,
-        mov_rip_load,
-        mov_rip_store,
-    };
-
-    /// @brief One disassembled instruction whose computed target equals the
-    ///        queried address, plus its kind and decoded length.
-    struct BYTEBINDER_API xref {
-        uintptr_t instruction_address = 0;
-        xref_kind kind = xref_kind::call;
-        size_t instruction_length = 0;
-    };
-
-    /// @brief One element of an instruction-template pattern: mnemonic
-    ///        (case-insensitive; empty = wildcard) and optional operand-count
-    ///        constraint.
-    struct BYTEBINDER_API instruction_pattern_element {
-        std::string mnemonic;
-        std::optional<size_t> operand_count;
-    };
 
     /// @brief Free-function backend for process::find_xrefs.
     BYTEBINDER_API std::vector<xref> find_xrefs_in_process(

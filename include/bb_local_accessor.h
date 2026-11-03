@@ -2,7 +2,7 @@
  * bytebinder - A C++ Library for Low-Level Memory Manipulation
  *
  * Authors: Péter Marton, Jovan Ivanovic
- * License: MIT
+ * License: BSD 3-Clause
  */
 
 #pragma once
@@ -11,9 +11,11 @@
 
 namespace bytebinder {
     /**
-     * @brief In-process memory accessor: direct dereference for read/write,
-     *        VirtualProtect/mprotect for protection changes, GetModuleHandle/
-     *        dl_iterate_phdr for module enumeration. Process-wide singleton.
+     * @brief In-process memory accessor: direct dereference for read/write
+     *        (SEH-guarded on MSVC so unreadable pages return a short read),
+     *        VirtualProtect/mprotect/mach_vm_protect for protection changes,
+     *        and EnumProcessModules/dl_iterate_phdr/dyld image infos for
+     *        module enumeration. Process-wide singleton.
      */
     class BYTEBINDER_API local_accessor : public memory_accessor {
     public:

@@ -2,7 +2,7 @@
  * bytebinder - A C++ Library for Low-Level Memory Manipulation
  *
  * Authors: Péter Marton, Jovan Ivanovic
- * License: MIT
+ * License: BSD 3-Clause
  */
 
 #include "bb_process.h"
@@ -17,6 +17,8 @@
 #if defined(_WIN32)
     #include <windows.h>
     #include <dbghelp.h>
+#elif defined(__APPLE__)
+    #include "bb_darwin.h"
 #else
     #include <elf.h>
 #endif
@@ -56,6 +58,72 @@ namespace bytebinder {
         std::mutex symbol_cache_mutex;
         std::unordered_map<std::string, module_symbol_table> symbol_cache;
 
+        void sort_and_index(module_symbol_table& table) {
+            std::sort(table.entries_sorted_by_address.begin(),
+                       table.entries_sorted_by_address.end(),
+                       [](const symbol_info& left, const symbol_info& right) {
+                           return left.address < right.address;
+                       });
+            table.by_name.clear();
+            for (size_t entry_index = 0;
+                 entry_index < table.entries_sorted_by_address.size();
+                 ++entry_index) {
+                table.by_name.emplace(table.entries_sorted_by_address[entry_index].name,
+                                      entry_index);
+            }
+        }
+
+#if defined(__APPLE__)
+        const module_symbol_table* load_or_get_cached(memory_accessor& target_accessor,
+                                                      const module_info& info) {
+            const std::string cache_key = info.path + "@" + std::to_string(info.base);
+            std::lock_guard<std::mutex> guard(symbol_cache_mutex);
+            const auto cached = symbol_cache.find(cache_key);
+            if (cached != symbol_cache.end()) {
+                return &cached->second;
+            }
+
+            module_symbol_table fresh_table;
+            darwin::for_each_symbol(target_accessor, info.base,
+                [&](std::string_view name, uintptr_t address) {
+                    std::string owned_name(name);
+                    if (fresh_table.by_name.find(owned_name) != fresh_table.by_name.end()) {
+                        return;
+                    }
+                    symbol_info entry;
+                    entry.name = owned_name;
+                    entry.module_name = info.name;
+                    entry.address = address;
+                    fresh_table.by_name.emplace(std::move(owned_name),
+                                                fresh_table.entries_sorted_by_address.size());
+                    fresh_table.entries_sorted_by_address.push_back(std::move(entry));
+                });
+            if (fresh_table.entries_sorted_by_address.empty()) {
+                return nullptr;
+            }
+            sort_and_index(fresh_table);
+
+            // nlist carries no sizes; treat each symbol as running up to the
+            // next distinct address (aliases such as memcpy/memmove share one).
+            auto& entries = fresh_table.entries_sorted_by_address;
+            const uintptr_t module_end = info.base + info.size;
+            for (size_t entry_index = 0; entry_index < entries.size(); ++entry_index) {
+                size_t next_index = entry_index + 1;
+                while (next_index < entries.size()
+                       && entries[next_index].address == entries[entry_index].address) {
+                    ++next_index;
+                }
+                const uintptr_t next_address = next_index < entries.size()
+                    ? entries[next_index].address : module_end;
+                if (next_address > entries[entry_index].address) {
+                    entries[entry_index].size = next_address - entries[entry_index].address;
+                }
+            }
+
+            const auto inserted = symbol_cache.emplace(cache_key, std::move(fresh_table));
+            return &inserted.first->second;
+        }
+#else
         template<typename ElfHeader, typename SectionHeader, typename SymbolEntry,
                  unsigned ElfClassValue>
         bool parse_elf_for(std::ifstream& file_stream,
@@ -164,7 +232,8 @@ namespace bytebinder {
             return true;
         }
 
-        const module_symbol_table* load_or_get_cached(const module_info& info) {
+        const module_symbol_table* load_or_get_cached(memory_accessor& /*target_accessor*/,
+                                                      const module_info& info) {
             std::lock_guard<std::mutex> guard(symbol_cache_mutex);
             const auto cached = symbol_cache.find(info.path);
             if (cached != symbol_cache.end()) {
@@ -198,24 +267,12 @@ namespace bytebinder {
                 return nullptr;
             }
 
-            std::sort(fresh_table.entries_sorted_by_address.begin(),
-                       fresh_table.entries_sorted_by_address.end(),
-                       [](const symbol_info& left, const symbol_info& right) {
-                           return left.address < right.address;
-                       });
-            // Rebuild by_name index after sort.
-            fresh_table.by_name.clear();
-            for (size_t entry_index = 0;
-                 entry_index < fresh_table.entries_sorted_by_address.size();
-                 ++entry_index) {
-                fresh_table.by_name.emplace(
-                    fresh_table.entries_sorted_by_address[entry_index].name,
-                    entry_index);
-            }
+            sort_and_index(fresh_table);
 
             const auto inserted = symbol_cache.emplace(info.path, std::move(fresh_table));
             return &inserted.first->second;
         }
+#endif
 #endif
     }
 
@@ -271,7 +328,7 @@ namespace bytebinder {
             if (current_module.path.empty() || current_module.path[0] != '/') {
                 continue;
             }
-            const auto* table = load_or_get_cached(current_module);
+            const auto* table = load_or_get_cached(*accessor_impl, current_module);
             if (!table) {
                 continue;
             }
@@ -307,7 +364,7 @@ namespace bytebinder {
                 continue;
             }
             if (current_module.path.empty() || current_module.path[0] != '/') continue;
-            const auto* table = load_or_get_cached(current_module);
+            const auto* table = load_or_get_cached(*accessor_impl, current_module);
             if (!table) continue;
             for (size_t index = 0; index < symbol_names.size(); ++index) {
                 if (results[index].has_value()) continue;
@@ -365,7 +422,7 @@ namespace bytebinder {
             if (current_module.path.empty() || current_module.path[0] != '/') {
                 continue;
             }
-            const auto* table = load_or_get_cached(current_module);
+            const auto* table = load_or_get_cached(*accessor_impl, current_module);
             if (!table || table->entries_sorted_by_address.empty()) {
                 continue;
             }

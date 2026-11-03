@@ -2,19 +2,22 @@
  * bytebinder - A C++ Library for Low-Level Memory Manipulation
  *
  * Authors: Péter Marton, Jovan Ivanovic
- * License: MIT
+ * License: BSD 3-Clause
  */
 
 #include "bb_local_accessor.h"
 #include "bb_log_sink.h"
 #include "bb_memory_exceptions.h"
 
+#include <algorithm>
 #include <cstring>
 #include <cstdio>
 
 #if defined(_WIN32)
     #include <windows.h>
     #include <psapi.h>
+#elif defined(__APPLE__)
+    #include "bb_darwin.h"
 #endif
 
 namespace bytebinder {
@@ -33,6 +36,9 @@ namespace bytebinder {
         }
 
         int page_to_posix_protection(DWORD page_flags) {
+            // Touching a PAGE_GUARD page raises STATUS_GUARD_PAGE_VIOLATION
+            // (thread stacks carry one), so report it as inaccessible.
+            if ((page_flags & PAGE_GUARD) != 0) return 0;
             switch (page_flags & 0xFF) {
                 case PAGE_NOACCESS:               return 0;
                 case PAGE_READONLY:               return protection::read;
@@ -45,7 +51,7 @@ namespace bytebinder {
                 default:                          return 0;
             }
         }
-#else
+#elif !defined(__APPLE__)
         int posix_to_native_protection(int posix_flags) {
             int native = 0;
             if (posix_flags & protection::read)    native |= PROT_READ;
@@ -60,6 +66,41 @@ namespace bytebinder {
             if (permission_string[1] == 'w') parsed |= protection::write;
             if (permission_string[2] == 'x') parsed |= protection::execute;
             return parsed;
+        }
+#endif
+
+#if defined(_MSC_VER)
+        bool guarded_copy(void* destination, const void* source, size_t size) noexcept {
+            __try {
+                std::memcpy(destination, source, size);
+                return true;
+            } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION
+                        || GetExceptionCode() == EXCEPTION_GUARD_PAGE
+                            ? EXCEPTION_EXECUTE_HANDLER
+                            : EXCEPTION_CONTINUE_SEARCH) {
+                return false;
+            }
+        }
+
+        // A region can be freed between regions() and read(), so a fault
+        // falls back to page-sized copies and returns the readable prefix.
+        size_t fault_tolerant_copy(void* destination, uintptr_t address, size_t size) noexcept {
+            if (guarded_copy(destination, reinterpret_cast<const void*>(address), size)) {
+                return size;
+            }
+            constexpr uintptr_t page_size = 4096;
+            size_t copied = 0;
+            while (copied < size) {
+                const uintptr_t cursor = address + copied;
+                const size_t page_remaining = static_cast<size_t>(page_size - (cursor & (page_size - 1)));
+                const size_t chunk = std::min(page_remaining, size - copied);
+                if (!guarded_copy(static_cast<uint8_t*>(destination) + copied,
+                                  reinterpret_cast<const void*>(cursor), chunk)) {
+                    break;
+                }
+                copied += chunk;
+            }
+            return copied;
         }
 #endif
     }
@@ -81,8 +122,12 @@ namespace bytebinder {
         if (address == 0 || destination == nullptr || size == 0) {
             return 0;
         }
+#if defined(_MSC_VER)
+        return fault_tolerant_copy(destination, address, size);
+#else
         std::memcpy(destination, reinterpret_cast<const void*>(address), size);
         return size;
+#endif
     }
 
     size_t local_accessor::write(uintptr_t address, const void* source, size_t size) {
@@ -109,6 +154,8 @@ namespace bytebinder {
             return 0;
         }
         return page_to_posix_protection(region_info_local.Protect);
+#elif defined(__APPLE__)
+        return darwin::query_protection(mach_task_self(), address).value_or(protection::none);
 #else
         FILE* maps_file = std::fopen("/proc/self/maps", "r");
         if (!maps_file) {
@@ -145,6 +192,8 @@ namespace bytebinder {
             throw memory_operation_exception("VirtualProtect failed.",
                                               memory_error_code::PROTECTION_CHANGE_FAILED);
         }
+#elif defined(__APPLE__)
+        darwin::change_protection(mach_task_self(), address, size, new_protection);
 #else
         const long page_size = sysconf(_SC_PAGESIZE);
         const uintptr_t aligned_start = address & ~(static_cast<uintptr_t>(page_size) - 1);
@@ -183,6 +232,8 @@ namespace bytebinder {
             }
             cursor = reinterpret_cast<uintptr_t>(info.BaseAddress) + info.RegionSize;
         }
+#elif defined(__APPLE__)
+        out = darwin::enumerate_regions(mach_task_self(), getpid());
 #else
         FILE* maps_file = std::fopen("/proc/self/maps", "r");
         if (!maps_file) return out;
@@ -240,6 +291,8 @@ namespace bytebinder {
             entry.size = information.SizeOfImage;
             out.push_back(std::move(entry));
         }
+#elif defined(__APPLE__)
+        out = darwin::enumerate_modules(*this, mach_task_self());
 #else
         struct iteration_state {
             std::vector<module_info>* destination;

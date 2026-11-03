@@ -2,13 +2,15 @@
  * bytebinder - A C++ Library for Low-Level Memory Manipulation
  *
  * Authors: Péter Marton, Jovan Ivanovic
- * License: MIT
+ * License: BSD 3-Clause
  */
 
 #pragma once
 
 #include "bb_api.h"
 #include "bb_memory_exceptions.h"
+#include "bb_chain_resolution.h"
+#include "bb_chain_step.h"
 
 #include <chrono>
 #include <cstddef>
@@ -23,37 +25,6 @@ namespace bytebinder {
 
     class process;
     class watch_handle;
-
-    /**
-     * @brief One hop in a pointer chain.
-     *
-     * `offset` is added to the running address; `dereference == true` means
-     * after adding the offset, read 8 bytes at the resulting address and
-     * treat them as the next address. The final step in a typical chain
-     * has `dereference == false` — its offset is the field-within-struct
-     * location whose value the caller will read separately via read_chain<T>.
-     */
-    struct BYTEBINDER_API chain_step {
-        ptrdiff_t offset = 0;
-        bool dereference = true;
-    };
-
-    /**
-     * @brief Outcome of resolve_chain.
-     *
-     * On success `address` holds the final VA. On failure all the diagnostic
-     * fields describe where and why:
-     * - failed_at_step: zero-based index into the steps span.
-     * - failure: typed code (READ_FAILED on bad deref, etc).
-     * - partial_walk_addr: the running address at the moment of failure,
-     *   post-offset and pre-deref.
-     */
-    struct BYTEBINDER_API chain_resolution {
-        std::optional<uintptr_t> address;
-        size_t failed_at_step = 0;
-        memory_error_code failure = memory_error_code::READ_FAILED;
-        uintptr_t partial_walk_addr = 0;
-    };
 
     /**
      * @brief Stateless pointer-chain walker bound to @p target_process.

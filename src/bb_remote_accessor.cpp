@@ -2,13 +2,15 @@
  * bytebinder - A C++ Library for Low-Level Memory Manipulation
  *
  * Authors: Péter Marton, Jovan Ivanovic
- * License: MIT
+ * License: BSD 3-Clause
  */
 
 #include "bb_remote_accessor.h"
 #include "bb_log_sink.h"
 #include "bb_memory_exceptions.h"
 
+#include <algorithm>
+#include <limits>
 #include <string>
 
 #include <cstring>
@@ -18,6 +20,15 @@
 #if defined(_WIN32)
     #include <windows.h>
     #include <psapi.h>
+#elif defined(__APPLE__)
+    #include "bb_darwin.h"
+
+    #include <mach/mach.h>
+    #include <mach/mach_error.h>
+    #include <mach/mach_vm.h>
+    #include <errno.h>
+    #include <signal.h>
+    #include <unistd.h>
 #else
     #include <sys/uio.h>
     #include <sys/types.h>
@@ -51,6 +62,9 @@ namespace bytebinder {
         }
 
         int page_to_posix_protection(DWORD page_flags) {
+            // Touching a PAGE_GUARD page raises STATUS_GUARD_PAGE_VIOLATION
+            // (thread stacks carry one), so report it as inaccessible.
+            if ((page_flags & PAGE_GUARD) != 0) return 0;
             switch (page_flags & 0xFF) {
                 case PAGE_NOACCESS:               return 0;
                 case PAGE_READONLY:               return protection::read;
@@ -63,7 +77,7 @@ namespace bytebinder {
                 default:                          return 0;
             }
         }
-#else
+#elif !defined(__APPLE__)
         int parse_proc_protection(const char* permission_string) {
             int parsed = 0;
             if (permission_string[0] == 'r') parsed |= protection::read;
@@ -180,6 +194,93 @@ namespace bytebinder {
             out.push_back(std::move(entry));
         }
         return out;
+    }
+#elif defined(__APPLE__)
+    remote_accessor::remote_accessor(uint32_t target_process_id) : target_pid(target_process_id) {
+        if (kill(static_cast<pid_t>(target_process_id), 0) != 0 && errno == ESRCH) {
+            throw memory_operation_exception("Target process does not exist.",
+                                              memory_error_code::INITIALIZATION_FAILED);
+        }
+        if (static_cast<pid_t>(target_process_id) == getpid()) {
+            task_port = mach_task_self();
+            return;
+        }
+        mach_port_t acquired_task = MACH_PORT_NULL;
+        const kern_return_t result = task_for_pid(mach_task_self(),
+                                                  static_cast<int>(target_process_id),
+                                                  &acquired_task);
+        if (result == KERN_SUCCESS) {
+            task_port = acquired_task;
+            return;
+        }
+        // Mirror Linux, where a missing ptrace permission only surfaces when
+        // memory is touched: keep the handle so alive() still works, and let
+        // reads return 0.
+        log(log_level::warn,
+            std::string("remote_accessor: task_for_pid failed (") + mach_error_string(result)
+                + "); memory access needs root or the com.apple.security.cs.debugger entitlement");
+    }
+
+    remote_accessor::~remote_accessor() {
+        if (task_port != MACH_PORT_NULL && task_port != mach_task_self()) {
+            mach_port_deallocate(mach_task_self(), task_port);
+        }
+    }
+
+    size_t remote_accessor::read(uintptr_t address, void* destination, size_t size) {
+        if (task_port == MACH_PORT_NULL || destination == nullptr || size == 0) return 0;
+        mach_vm_size_t bytes_read = 0;
+        if (mach_vm_read_overwrite(task_port, address, size,
+                                   reinterpret_cast<mach_vm_address_t>(destination),
+                                   &bytes_read) == KERN_SUCCESS) {
+            return static_cast<size_t>(bytes_read);
+        }
+        // mach_vm_read_overwrite is all-or-nothing; retry page by page so a
+        // read that runs into an unmapped page returns the readable prefix.
+        const uintptr_t page_size = static_cast<uintptr_t>(vm_page_size);
+        size_t copied = 0;
+        while (copied < size) {
+            const uintptr_t cursor = address + copied;
+            const size_t chunk = std::min<size_t>(page_size - (cursor & (page_size - 1)), size - copied);
+            mach_vm_size_t chunk_read = 0;
+            if (mach_vm_read_overwrite(task_port, cursor, chunk,
+                                       reinterpret_cast<mach_vm_address_t>(
+                                           static_cast<uint8_t*>(destination) + copied),
+                                       &chunk_read) != KERN_SUCCESS || chunk_read == 0) {
+                break;
+            }
+            copied += static_cast<size_t>(chunk_read);
+        }
+        if (copied < size) {
+            log(log_level::warn,
+                "remote_accessor::read: short read at " + std::to_string(address));
+        }
+        return copied;
+    }
+
+    size_t remote_accessor::write(uintptr_t address, const void* source, size_t size) {
+        if (task_port == MACH_PORT_NULL || source == nullptr || size == 0) return 0;
+        if (size > std::numeric_limits<mach_msg_type_number_t>::max()) return 0;
+        const kern_return_t result = mach_vm_write(task_port, address,
+                                                   reinterpret_cast<vm_offset_t>(source),
+                                                   static_cast<mach_msg_type_number_t>(size));
+        return result == KERN_SUCCESS ? size : 0;
+    }
+
+    int remote_accessor::read_protection(uintptr_t address) {
+        return darwin::query_protection(task_port, address).value_or(protection::none);
+    }
+
+    int remote_accessor::set_protection(uintptr_t address, size_t size, int new_protection) {
+        return darwin::change_protection(task_port, address, size, new_protection);
+    }
+
+    std::vector<region_info> remote_accessor::regions() {
+        return darwin::enumerate_regions(task_port, static_cast<int>(target_pid));
+    }
+
+    std::vector<module_info> remote_accessor::modules() {
+        return darwin::enumerate_modules(*this, task_port);
     }
 #else
     remote_accessor::remote_accessor(uint32_t target_process_id) : target_pid(target_process_id) {

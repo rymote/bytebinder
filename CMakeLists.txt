@@ -1,7 +1,7 @@
 # bytebinder - A C++ Library for Low-Level Memory Manipulation
 #
 # Authors: Péter Marton, Jovan Ivanovic
-# License: MIT
+# License: BSD 3-Clause
 #
 # This file is part of bytebinder, a powerful tool for reading, writing, hooking, and manipulating memory addresses.
 #
@@ -10,7 +10,7 @@
 cmake_minimum_required(VERSION 3.28)
 
 project(bytebinder
-    VERSION 0.2.0
+    VERSION 0.3.0
     LANGUAGES CXX
 )
 
@@ -53,47 +53,75 @@ endif()
 
 set(BYTEBINDER_PUBLIC_HEADERS
     include/bb_api.h
+    include/bb_chain_resolution.h
+    include/bb_chain_step.h
     include/bb_code_scan.h
     include/bb_disasm.h
     include/bb_dump.h
     include/bb_heuristics.h
+    include/bb_hook_handle.h
+    include/bb_init_func.h
+    include/bb_init_registry.h
     include/bb_init_system.h
+    include/bb_instruction_pattern_element.h
     include/bb_local_accessor.h
+    include/bb_log_level.h
     include/bb_log_sink.h
     include/bb_macros.h
     include/bb_mem.h
+    include/bb_mem_holder.h
     include/bb_memory_accessor.h
+    include/bb_memory_dump_options.h
+    include/bb_memory_dump_result.h
+    include/bb_memory_error_code.h
     include/bb_memory_exceptions.h
+    include/bb_memory_operation_exception.h
+    include/bb_module_info.h
     include/bb_pattern.h
     include/bb_pch.h
     include/bb_pointer_chain.h
     include/bb_process.h
+    include/bb_region_info.h
     include/bb_remote_accessor.h
     include/bb_scoped_unlock.h
+    include/bb_static_func.h
+    include/bb_static_hook.h
+    include/bb_static_mem.h
+    include/bb_string_table_run.h
+    include/bb_symbol_info.h
+    include/bb_symbolize_result.h
     include/bb_symbols.h
     include/bb_typed_scan.h
     include/bb_version.h
     include/bb_vmt.h
+    include/bb_vmt_handle.h
+    include/bb_vtable_candidate.h
+    include/bb_watch_handle.h
+    include/bb_xref.h
+    include/bb_xref_kind.h
     include/bytebinder.h
 )
 
 set(BYTEBINDER_SOURCES
     src/bb_code_scan.cpp
+    src/bb_darwin.cpp
     src/bb_disasm.cpp
     src/bb_dump.cpp
     src/bb_heuristics.cpp
+    src/bb_hook_handle.cpp
     src/bb_local_accessor.cpp
     src/bb_log_sink.cpp
     src/bb_mem.cpp
-    src/bb_memory_exceptions.cpp
+    src/bb_memory_operation_exception.cpp
     src/bb_pattern.cpp
     src/bb_pointer_chain.cpp
+    src/bb_process.cpp
     src/bb_remote_accessor.cpp
     src/bb_scoped_unlock.cpp
     src/bb_symbols.cpp
     src/bb_version.cpp
-    src/bb_process.cpp
     src/bb_vmt.cpp
+    src/bb_vmt_handle.cpp
 )
 
 add_library(bytebinder-objects OBJECT
@@ -200,7 +228,11 @@ if(BYTEBINDER_BUILD_TESTS)
     )
     FetchContent_MakeAvailable(Catch2)
 
-    add_executable(bytebinder-tests tests/tests.cpp)
+    file(GLOB BYTEBINDER_TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp)
+    add_executable(bytebinder-tests ${BYTEBINDER_TEST_SOURCES})
+    target_include_directories(bytebinder-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+    target_compile_definitions(bytebinder-tests PRIVATE
+        BYTEBINDER_EXPECTED_VERSION="${PROJECT_VERSION}")
     target_link_libraries(bytebinder-tests
         PRIVATE
             $<IF:$<TARGET_EXISTS:bytebinder-static>,bytebinder-static,bytebinder-shared>

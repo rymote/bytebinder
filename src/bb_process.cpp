@@ -2,7 +2,7 @@
  * bytebinder - A C++ Library for Low-Level Memory Manipulation
  *
  * Authors: Péter Marton, Jovan Ivanovic
- * License: MIT
+ * License: BSD 3-Clause
  */
 
 #include "bb_process.h"
@@ -17,7 +17,9 @@
 #include <unordered_map>
 #include <mutex>
 #include <cstring>
-#if !defined(_WIN32)
+#if defined(__APPLE__)
+#include "bb_darwin.h"
+#elif !defined(_WIN32)
 #include <elf.h>
 #endif
 
@@ -117,10 +119,10 @@ namespace bytebinder {
         std::mutex section_cache_mutex;
         std::unordered_map<std::string, std::vector<process::module_section>> section_cache;
 
-        std::vector<process::module_section> parse_elf_sections(const std::string& module_path,
-                                                                  uintptr_t module_base) {
+        [[maybe_unused]] std::vector<process::module_section> parse_elf_sections(const std::string& module_path,
+                                                                                 uintptr_t module_base) {
             std::vector<process::module_section> parsed_sections;
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__APPLE__)
             std::ifstream file_stream(module_path, std::ios::binary);
             if (!file_stream) return parsed_sections;
             ElfW(Ehdr) elf_header{};
@@ -158,8 +160,8 @@ namespace bytebinder {
             return parsed_sections;
         }
 
-        std::vector<process::module_section> parse_pe_sections(memory_accessor& target_accessor,
-                                                                 uintptr_t module_base) {
+        [[maybe_unused]] std::vector<process::module_section> parse_pe_sections(memory_accessor& target_accessor,
+                                                                                uintptr_t module_base) {
             std::vector<process::module_section> parsed_sections;
 #if defined(_WIN32)
             IMAGE_DOS_HEADER dos_header{};
@@ -247,6 +249,8 @@ namespace bytebinder {
 
 #if defined(_WIN32)
         auto parsed = parse_pe_sections(*accessor_impl, resolved_module->base);
+#elif defined(__APPLE__)
+        auto parsed = darwin::parse_sections(*accessor_impl, resolved_module->base);
 #else
         auto parsed = parse_elf_sections(resolved_module->path, resolved_module->base);
 #endif

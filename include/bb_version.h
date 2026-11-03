@@ -2,7 +2,7 @@
  * bytebinder - A C++ Library for Low-Level Memory Manipulation
  *
  * Authors: Péter Marton, Jovan Ivanovic
- * License: MIT
+ * License: BSD 3-Clause
  */
 
 #pragma once
@@ -15,10 +15,10 @@
 extern "C" {
 #endif
 
-/// @brief Semantic version string of the linked bytebinder build, e.g. "0.2.0".
+/// @brief Semantic version string of the linked bytebinder build, e.g. "0.3.0".
 BYTEBINDER_API const char* bytebinder_version(void);
 
-/// @brief Monotonically increasing ABI revision. Bump this in src/version.cpp
+/// @brief Monotonically increasing ABI revision. Bump this in src/bb_version.cpp
 ///        every time the layout of any exported struct, vtable, or class
 ///        changes. Wrappers that dynamically load bytebinder must compare this
 ///        against the value they were built against and refuse mismatched

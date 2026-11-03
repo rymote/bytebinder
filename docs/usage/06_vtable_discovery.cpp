@@ -5,13 +5,14 @@
 // candidates and their entry counts.
 
 #include <bytebinder.h>
+#include <cinttypes>
 #include <cstdio>
 
 int main() {
     auto current = bb::process::current();
     auto candidates = current.find_vtables(std::nullopt, 4, 5);
     for (const auto& candidate : candidates) {
-        std::printf("vtable @ 0x%lx (entries=%zu)\n",
+        std::printf("vtable @ 0x%" PRIxPTR " (entries=%zu)\n",
                     candidate.address, candidate.entries.size());
     }
     return 0;
