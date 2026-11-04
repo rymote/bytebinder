@@ -107,11 +107,26 @@ namespace bytebinder {
 
     size_t remote_accessor::read(uintptr_t address, void* destination, size_t size) {
         SIZE_T bytes_read = 0;
-        if (!ReadProcessMemory(process_handle, reinterpret_cast<LPCVOID>(address),
-                               destination, size, &bytes_read)) {
-            return 0;
+        if (ReadProcessMemory(process_handle, reinterpret_cast<LPCVOID>(address),
+                              destination, size, &bytes_read)) {
+            return static_cast<size_t>(bytes_read);
         }
-        return static_cast<size_t>(bytes_read);
+        // ReadProcessMemory fails the whole call when any page in the range is
+        // unreadable; retry page by page so the readable prefix is returned.
+        constexpr uintptr_t page_size = 4096;
+        size_t copied = 0;
+        while (copied < size) {
+            const uintptr_t cursor = address + copied;
+            const size_t chunk = std::min<size_t>(page_size - (cursor & (page_size - 1)), size - copied);
+            SIZE_T chunk_read = 0;
+            if (!ReadProcessMemory(process_handle, reinterpret_cast<LPCVOID>(cursor),
+                                   static_cast<uint8_t*>(destination) + copied, chunk, &chunk_read)
+                || chunk_read == 0) {
+                break;
+            }
+            copied += static_cast<size_t>(chunk_read);
+        }
+        return copied;
     }
 
     size_t remote_accessor::write(uintptr_t address, const void* source, size_t size) {

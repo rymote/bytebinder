@@ -116,6 +116,8 @@ set(BYTEBINDER_PUBLIC_HEADERS
     include/bb_watch_handle.h
     include/bb_watchpoint.h
     include/bb_watchpoint_condition.h
+    include/bb_function_entry.h
+    include/bb_function_source.h
     include/bb_xref.h
     include/bb_xref_kind.h
     include/bytebinder.h

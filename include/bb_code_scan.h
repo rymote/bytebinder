@@ -27,6 +27,8 @@
  */
 
 #include "bb_api.h"
+#include "bb_function_entry.h"
+#include "bb_function_source.h"
 #include "bb_instruction_pattern_element.h"
 #include "bb_xref.h"
 #include "bb_xref_kind.h"
@@ -52,6 +54,12 @@ namespace bytebinder {
 
     /// @brief Free-function backend for process::find_prologues.
     BYTEBINDER_API std::vector<uintptr_t> find_prologues_in_process(
+        const process& target_process,
+        std::string_view module_name,
+        size_t max_results);
+
+    /// @brief Free-function backend for process::find_functions.
+    BYTEBINDER_API std::vector<function_entry> find_functions_in_process(
         const process& target_process,
         std::string_view module_name,
         size_t max_results);

@@ -218,16 +218,17 @@ for (const auto& reference : xrefs) {
 }
 ```
 
-### Discovering function entry points by prologue heuristic
+### Listing the functions in a module
 
 ```cpp
 auto target = bb::process::current();
 auto modules = target.modules();
-auto prologues = target.find_prologues(modules.front().name, /*max=*/100);
-for (uintptr_t entry : prologues) {
-    std::printf("prologue at 0x%lx\n", entry);
+for (const auto& function : target.find_functions(modules.front().name)) {
+    std::printf("function at 0x%lx, %zu bytes\n", function.address, function.size);
 }
 ```
+
+On an x64 PE module this reads the exception directory, then adds direct call and tail jump targets to find leaf functions. Other modules fall back to `find_prologues`, a heuristic that guesses from bytes and can both miss functions and flag code that only looks like a start.
 
 ### Locating vtables and string tables
 
@@ -547,7 +548,7 @@ The full surface is documented inline in `include/`. The summary below is a navi
 | `bb_process_enumeration.h` | `process_entry`, `list_processes`, `find_processes_by_name` |
 | `bb_thread_enumeration.h` | `thread_entry`, `list_threads`, `list_current_process_threads` |
 | `bb_debugger.h` | `debugger`, `cpu_registers`, `watchpoint`, `watchpoint_condition`, `debug_event`, `debug_event_kind`, `debug_register_encoding` |
-| `bb_code_scan.h` | `xref`, `xref_kind`, `instruction_pattern_element`, `find_xrefs`, `find_prologues`, `find_instruction_pattern` |
+| `bb_code_scan.h` | `xref`, `xref_kind`, `function_entry`, `function_source`, `instruction_pattern_element`, `find_xrefs`, `find_functions`, `find_prologues`, `find_instruction_pattern` |
 | `bb_heuristics.h` | `vtable_candidate`, `string_table_run`, `find_vtables`, `find_string_tables` |
 | `bb_dump.h` | `memory_dump_options`, `memory_dump_result`, `dump_memory` |
 | `bb_symbols.h` | `symbol_info`, `symbolize_result` |

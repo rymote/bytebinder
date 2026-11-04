@@ -211,13 +211,32 @@ namespace bytebinder {
             size_t max_results = 10000) const;
 
         /**
-         * @brief Heuristic function-prologue scanner. Returns addresses where
-         *        @p module_name's executable regions begin a recognized x86_64
-         *        prologue: `endbr64`, `push rbp; mov rbp, rsp`, or
-         *        `sub rsp, imm` (frame-pointer-omitted leaves).
+         * @brief Heuristic function-prologue scanner. Returns addresses in
+         *        @p module_name's executable regions that sit on a likely function
+         *        boundary (16-byte aligned, or just after padding or a return) and
+         *        begin a recognized x86_64 prologue: `endbr64`, `sub rsp, imm`,
+         *        pushes of callee-saved registers, frame pointer setup, home-space
+         *        spills such as `mov [rsp+8], rbx`, or `mov rax, rsp`.
+         *        This is a guess from bytes. Prefer find_functions, which reads the
+         *        module's own function table when it has one.
          *        @p max_results = 0 means unlimited.
          */
         [[nodiscard]] std::vector<uintptr_t> find_prologues(
+            std::string_view module_name,
+            size_t max_results = 100000) const;
+
+        /**
+         * @brief Lists @p module_name's functions, sorted by address. On an x64 PE
+         *        module this reads the exception directory, the compiler's exact
+         *        list of functions that use the stack, skipping chained fragments,
+         *        then adds the targets of direct calls and tail jumps made from those
+         *        functions, which finds leaf functions. Jump thunks are followed to the
+         *        function behind them and are not reported themselves. A leaf function
+         *        only reached through a pointer, or never called, is not found. Without a usable table
+         *        (ELF, Mach-O, 32-bit PE, a table stripped by a packer) this falls
+         *        back to find_prologues. @p max_results = 0 means unlimited.
+         */
+        [[nodiscard]] std::vector<function_entry> find_functions(
             std::string_view module_name,
             size_t max_results = 100000) const;
 

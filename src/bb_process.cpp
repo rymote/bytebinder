@@ -491,6 +491,11 @@ namespace bytebinder {
         return find_xrefs_in_process(*this, target_address, module_name, max_results);
     }
 
+    std::vector<function_entry> process::find_functions(std::string_view module_name,
+                                                           size_t max_results) const {
+        return find_functions_in_process(*this, module_name, max_results);
+    }
+
     std::vector<uintptr_t> process::find_prologues(std::string_view module_name,
                                                       size_t max_results) const {
         return find_prologues_in_process(*this, module_name, max_results);

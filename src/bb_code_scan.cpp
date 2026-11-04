@@ -50,6 +50,24 @@ namespace bytebinder {
             }
         }
 
+        std::vector<region_info> executable_regions_of(memory_accessor& accessor, const module_info& module) {
+            const uintptr_t module_end = module.base + module.size;
+            std::vector<region_info> executable_regions;
+            for (const auto& region : accessor.regions()) {
+                if ((region.protection & protection::execute) == 0) continue;
+                if ((region.protection & protection::read) == 0) continue; // skip [vsyscall]
+                const uintptr_t region_end = region.base + region.size;
+                const uintptr_t overlap_start = std::max(region.base, module.base);
+                const uintptr_t overlap_end   = std::min(region_end, module_end);
+                if (overlap_start >= overlap_end) continue;
+                region_info clipped = region;
+                clipped.base = overlap_start;
+                clipped.size = overlap_end - overlap_start;
+                executable_regions.push_back(std::move(clipped));
+            }
+            return executable_regions;
+        }
+
         std::optional<uintptr_t> instruction_target(uintptr_t address,
                                                      const ZydisDecodedInstruction& decoded,
                                                      const ZydisDecodedOperand* operands) {
@@ -88,19 +106,7 @@ namespace bytebinder {
                                   std::string("find_xrefs: module not found: ") + std::string(*module_name));
                 return matches;
             }
-            const uintptr_t scan_end = resolved->base + resolved->size;
-            for (const auto& region : bound_accessor.regions()) {
-                if ((region.protection & protection::execute) == 0) continue;
-                if ((region.protection & protection::read) == 0) continue;
-                const uintptr_t region_end = region.base + region.size;
-                const uintptr_t overlap_start = std::max(region.base, resolved->base);
-                const uintptr_t overlap_end   = std::min(region_end, scan_end);
-                if (overlap_start >= overlap_end) continue;
-                region_info clipped = region;
-                clipped.base = overlap_start;
-                clipped.size = overlap_end - overlap_start;
-                executable_regions.push_back(std::move(clipped));
-            }
+            executable_regions = executable_regions_of(bound_accessor, *resolved);
         } else {
             for (auto& region : bound_accessor.regions()) {
                 if ((region.protection & protection::execute) == 0) continue;
@@ -160,26 +166,115 @@ namespace bytebinder {
     }
 
     namespace {
+        constexpr uint8_t padding_byte = 0xCC;
+        constexpr uint8_t return_byte = 0xC3;
+        constexpr uintptr_t function_alignment = 16;
+
+        bool is_stack_pointer(ZydisRegister reg) {
+            return reg == ZYDIS_REGISTER_RSP || reg == ZYDIS_REGISTER_ESP;
+        }
+
+        bool is_frame_pointer(ZydisRegister reg) {
+            return reg == ZYDIS_REGISTER_RBP || reg == ZYDIS_REGISTER_EBP;
+        }
+
+        bool is_callee_saved(ZydisRegister reg) {
+            switch (reg) {
+                case ZYDIS_REGISTER_RBX: case ZYDIS_REGISTER_RBP:
+                case ZYDIS_REGISTER_RSI: case ZYDIS_REGISTER_RDI:
+                case ZYDIS_REGISTER_R12: case ZYDIS_REGISTER_R13:
+                case ZYDIS_REGISTER_R14: case ZYDIS_REGISTER_R15:
+                case ZYDIS_REGISTER_EBX: case ZYDIS_REGISTER_EBP:
+                case ZYDIS_REGISTER_ESI: case ZYDIS_REGISTER_EDI:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        bool pushes_callee_saved(const ZydisDecodedInstruction& decoded, const ZydisDecodedOperand* operands) {
+            return decoded.mnemonic == ZYDIS_MNEMONIC_PUSH
+                && operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER
+                && is_callee_saved(operands[0].reg.value);
+        }
+
+        bool reserves_stack_frame(const ZydisDecodedInstruction& decoded, const ZydisDecodedOperand* operands) {
+            return decoded.mnemonic == ZYDIS_MNEMONIC_SUB
+                && operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER
+                && is_stack_pointer(operands[0].reg.value)
+                && operands[1].type == ZYDIS_OPERAND_TYPE_IMMEDIATE;
+        }
+
+        bool sets_up_frame_pointer(const ZydisDecodedInstruction& decoded, const ZydisDecodedOperand* operands) {
+            if (operands[0].type != ZYDIS_OPERAND_TYPE_REGISTER || !is_frame_pointer(operands[0].reg.value)) {
+                return false;
+            }
+            if (decoded.mnemonic == ZYDIS_MNEMONIC_MOV) {
+                return operands[1].type == ZYDIS_OPERAND_TYPE_REGISTER && is_stack_pointer(operands[1].reg.value);
+            }
+            return decoded.mnemonic == ZYDIS_MNEMONIC_LEA
+                && operands[1].type == ZYDIS_OPERAND_TYPE_MEMORY
+                && is_stack_pointer(operands[1].mem.base);
+        }
+
+        // MSVC stores incoming registers in the caller's shadow space, such as mov [rsp+8], rbx.
+        bool spills_to_home_space(const ZydisDecodedInstruction& decoded, const ZydisDecodedOperand* operands) {
+            if (decoded.mnemonic != ZYDIS_MNEMONIC_MOV
+                || operands[0].type != ZYDIS_OPERAND_TYPE_MEMORY
+                || !is_stack_pointer(operands[0].mem.base)
+                || operands[0].mem.index != ZYDIS_REGISTER_NONE
+                || operands[1].type != ZYDIS_OPERAND_TYPE_REGISTER) {
+                return false;
+            }
+            const int64_t displacement = operands[0].mem.disp.value;
+            return displacement == 0x8 || displacement == 0x10 || displacement == 0x18 || displacement == 0x20;
+        }
+
+        // MSVC opens larger functions with mov rax, rsp, then spills through rax.
+        bool captures_stack_pointer(const ZydisDecodedInstruction& decoded, const ZydisDecodedOperand* operands) {
+            return decoded.mnemonic == ZYDIS_MNEMONIC_MOV
+                && operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER
+                && operands[1].type == ZYDIS_OPERAND_TYPE_REGISTER
+                && is_stack_pointer(operands[1].reg.value)
+                && !is_frame_pointer(operands[0].reg.value);
+        }
+
         bool decoded_is_prologue_anchor(const ZydisDecodedInstruction& first,
+                                          const ZydisDecodedOperand* first_operands,
                                           const ZydisDecodedInstruction& second,
                                           const ZydisDecodedOperand* second_operands) {
-            // Pattern A: push rbp; mov rbp, rsp
-            if (first.mnemonic == ZYDIS_MNEMONIC_PUSH
-                && second.mnemonic == ZYDIS_MNEMONIC_MOV
-                && second.operand_count >= 2
-                && second_operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER
-                && second_operands[1].type == ZYDIS_OPERAND_TYPE_REGISTER
-                && second_operands[0].reg.value == ZYDIS_REGISTER_RBP
-                && second_operands[1].reg.value == ZYDIS_REGISTER_RSP) {
+            if (first.mnemonic == ZYDIS_MNEMONIC_ENDBR64 || first.mnemonic == ZYDIS_MNEMONIC_ENDBR32) {
                 return true;
             }
-            // Pattern B: endbr64 (CET indirect-branch tracking)
-            if (first.mnemonic == ZYDIS_MNEMONIC_ENDBR64) return true;
-            // Pattern C: sub rsp, N (no-frame-ptr leaf functions)
-            if (first.mnemonic == ZYDIS_MNEMONIC_SUB && first.operand_count >= 2) {
+            if (reserves_stack_frame(first, first_operands)) {
                 return true;
+            }
+            if (pushes_callee_saved(first, first_operands)) {
+                return pushes_callee_saved(second, second_operands)
+                    || reserves_stack_frame(second, second_operands)
+                    || sets_up_frame_pointer(second, second_operands);
+            }
+            if (spills_to_home_space(first, first_operands)) {
+                return spills_to_home_space(second, second_operands)
+                    || pushes_callee_saved(second, second_operands)
+                    || reserves_stack_frame(second, second_operands);
+            }
+            if (captures_stack_pointer(first, first_operands)) {
+                return second.mnemonic == ZYDIS_MNEMONIC_MOV
+                    && second_operands[0].type == ZYDIS_OPERAND_TYPE_MEMORY
+                    && second_operands[0].mem.base == first_operands[0].reg.value;
             }
             return false;
+        }
+
+        // Without this the scan decodes from the middle of real instructions, and most
+        // of what it reports is not a function start at all.
+        bool sits_on_function_boundary(const std::vector<uint8_t>& buffer, size_t cursor, uintptr_t address) {
+            if (cursor == 0 || address % function_alignment == 0) {
+                return true;
+            }
+            const uint8_t previous = buffer[cursor - 1];
+            return previous == padding_byte || previous == return_byte;
         }
     }
 
@@ -195,20 +290,7 @@ namespace bytebinder {
             return matches;
         }
 
-        const uintptr_t module_end = resolved->base + resolved->size;
-        std::vector<region_info> executable_regions;
-        for (const auto& region : bound_accessor.regions()) {
-            if ((region.protection & protection::execute) == 0) continue;
-            if ((region.protection & protection::read) == 0) continue; // skip [vsyscall]
-            const uintptr_t region_end = region.base + region.size;
-            const uintptr_t overlap_start = std::max(region.base, resolved->base);
-            const uintptr_t overlap_end   = std::min(region_end, module_end);
-            if (overlap_start >= overlap_end) continue;
-            region_info clipped = region;
-            clipped.base = overlap_start;
-            clipped.size = overlap_end - overlap_start;
-            executable_regions.push_back(std::move(clipped));
-        }
+        const std::vector<region_info> executable_regions = executable_regions_of(bound_accessor, *resolved);
 
         std::vector<uint8_t> region_buffer;
         ZydisDecoder& decoder = shared_decoder();
@@ -224,36 +306,256 @@ namespace bytebinder {
                                                             region.size);
             if (bytes_read == 0) continue;
 
-            for (size_t cursor = 0; cursor + 8 <= bytes_read;) {
+            for (size_t cursor = 0; cursor + 8 <= bytes_read; ++cursor) {
+                const uintptr_t candidate = region.base + cursor;
+                if (!sits_on_function_boundary(region_buffer, cursor, candidate)) {
+                    continue;
+                }
                 const ZyanStatus first_status = ZydisDecoderDecodeFull(
                     &decoder,
                     region_buffer.data() + cursor,
                     bytes_read - cursor,
                     &first_decoded, first_operands);
-                if (!ZYAN_SUCCESS(first_status)) {
-                    ++cursor;
+                if (!ZYAN_SUCCESS(first_status) || cursor + first_decoded.length + 1 > bytes_read) {
                     continue;
                 }
-                bool matched = false;
-                if (cursor + first_decoded.length + 1 <= bytes_read) {
-                    const ZyanStatus second_status = ZydisDecoderDecodeFull(
-                        &decoder,
-                        region_buffer.data() + cursor + first_decoded.length,
-                        bytes_read - cursor - first_decoded.length,
-                        &second_decoded, second_operands);
-                    if (ZYAN_SUCCESS(second_status)
-                        && decoded_is_prologue_anchor(first_decoded, second_decoded, second_operands)) {
-                        matches.push_back(region.base + cursor);
-                        matched = true;
-                        if (max_results != 0 && matches.size() >= max_results) {
-                            return matches;
-                        }
+                const ZyanStatus second_status = ZydisDecoderDecodeFull(
+                    &decoder,
+                    region_buffer.data() + cursor + first_decoded.length,
+                    bytes_read - cursor - first_decoded.length,
+                    &second_decoded, second_operands);
+                if (ZYAN_SUCCESS(second_status)
+                    && decoded_is_prologue_anchor(first_decoded, first_operands, second_decoded, second_operands)) {
+                    matches.push_back(candidate);
+                    if (max_results != 0 && matches.size() >= max_results) {
+                        return matches;
                     }
                 }
-                cursor += matched ? first_decoded.length : 1;
             }
         }
         return matches;
+    }
+
+    namespace {
+        constexpr uint16_t dos_magic = 0x5A4D;
+        constexpr uint32_t pe_signature = 0x00004550;
+        constexpr uint16_t machine_amd64 = 0x8664;
+        constexpr uint16_t pe32_plus_magic = 0x20B;
+        constexpr size_t optional_header_offset = 24;
+        constexpr size_t rva_count_offset = 108;
+        constexpr size_t data_directories_offset = 112;
+        constexpr size_t exception_directory_index = 3;
+        constexpr size_t data_directory_size = 8;
+        constexpr size_t runtime_function_size = 12;
+        constexpr uint8_t unwind_flag_chain_info = 0x4;
+        constexpr uintptr_t unwind_is_chain_reference = 0x1;
+
+        template<typename ValueType>
+        bool read_value(memory_accessor& accessor, uintptr_t address, ValueType& value) {
+            return accessor.read(address, &value, sizeof(ValueType)) == sizeof(ValueType);
+        }
+
+        // Fills functions with the table's real entries and fragments with the chained
+        // pieces of them, which are code but not function starts. Leaves both empty when
+        // the module has no table this can read.
+        void read_unwind_table(memory_accessor& accessor,
+                                 const module_info& module,
+                                 std::vector<function_entry>& functions,
+                                 std::vector<function_entry>& fragments) {
+            uint16_t magic = 0;
+            uint32_t pe_offset = 0;
+            uint32_t signature = 0;
+            uint16_t machine = 0;
+            if (!read_value(accessor, module.base, magic) || magic != dos_magic
+                || !read_value(accessor, module.base + 0x3C, pe_offset) || pe_offset >= module.size
+                || !read_value(accessor, module.base + pe_offset, signature) || signature != pe_signature
+                || !read_value(accessor, module.base + pe_offset + 4, machine) || machine != machine_amd64) {
+                return;
+            }
+
+            const uintptr_t optional_header = module.base + pe_offset + optional_header_offset;
+            const uintptr_t exception_directory = optional_header + data_directories_offset
+                + exception_directory_index * data_directory_size;
+            uint16_t optional_magic = 0;
+            uint32_t rva_count = 0;
+            uint32_t table_rva = 0;
+            uint32_t table_size = 0;
+            if (!read_value(accessor, optional_header, optional_magic) || optional_magic != pe32_plus_magic
+                || !read_value(accessor, optional_header + rva_count_offset, rva_count) || rva_count <= exception_directory_index
+                || !read_value(accessor, exception_directory, table_rva)
+                || !read_value(accessor, exception_directory + 4, table_size)
+                || table_size == 0
+                || static_cast<uint64_t>(table_rva) + table_size > module.size) {
+                return;
+            }
+
+            std::vector<uint32_t> table(table_size / sizeof(uint32_t));
+            const size_t bytes_read = accessor.read(module.base + table_rva, table.data(), table.size() * sizeof(uint32_t));
+            const size_t entry_count = bytes_read / runtime_function_size;
+
+            for (size_t entry_index = 0; entry_index < entry_count; ++entry_index) {
+                const uint32_t begin = table[entry_index * 3];
+                const uint32_t end = table[entry_index * 3 + 1];
+                const uint32_t unwind = table[entry_index * 3 + 2];
+                if (begin >= end || end > module.size) {
+                    continue;
+                }
+                function_entry entry;
+                entry.address = module.base + begin;
+                entry.size = end - begin;
+                entry.source = function_source::unwind_table;
+
+                bool is_fragment = (unwind & unwind_is_chain_reference) != 0;
+                uint8_t version_and_flags = 0;
+                if (!is_fragment && read_value(accessor, module.base + unwind, version_and_flags)) {
+                    is_fragment = ((version_and_flags >> 3) & unwind_flag_chain_info) != 0;
+                }
+                (is_fragment ? fragments : functions).push_back(entry);
+            }
+        }
+
+        bool lies_inside_any(const std::vector<function_entry>& sorted_ranges, uintptr_t address) {
+            auto next = std::upper_bound(sorted_ranges.begin(), sorted_ranges.end(), address,
+                [](uintptr_t value, const function_entry& entry) { return value < entry.address; });
+            if (next == sorted_ranges.begin()) {
+                return false;
+            }
+            --next;
+            return address < next->address + next->size;
+        }
+
+        constexpr int maximum_thunk_hops = 4;
+
+        // A call often lands on a jump thunk, which is not a function but leads to one.
+        // Returns nothing for a thunk that leaves the module, such as an import stub.
+        std::optional<uintptr_t> follow_jump_thunks(memory_accessor& accessor, uintptr_t address) {
+            ZydisDecoder& decoder = shared_decoder();
+            ZydisDecodedInstruction decoded;
+            ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
+            uint8_t first_bytes[ZYDIS_MAX_INSTRUCTION_LENGTH];
+            for (int hop = 0; hop < maximum_thunk_hops; ++hop) {
+                const size_t bytes_read = accessor.read(address, first_bytes, sizeof(first_bytes));
+                if (bytes_read == 0
+                    || !ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, first_bytes, bytes_read, &decoded, operands))) {
+                    return std::nullopt;
+                }
+                if (decoded.mnemonic != ZYDIS_MNEMONIC_JMP) {
+                    return address;
+                }
+                if (operands[0].type != ZYDIS_OPERAND_TYPE_IMMEDIATE || !operands[0].imm.is_relative) {
+                    return std::nullopt;
+                }
+                address = resolve_rip_relative(address, decoded.length, static_cast<int32_t>(operands[0].imm.value.s));
+            }
+            return std::nullopt;
+        }
+
+        // Decoding is only trustworthy from a known function start, so this walks the
+        // listed functions rather than sweeping the whole code section.
+        std::vector<function_entry> find_call_targets(memory_accessor& accessor,
+                                                         const module_info& module,
+                                                         const std::vector<function_entry>& functions,
+                                                         const std::vector<function_entry>& known_ranges) {
+            ZydisDecoder& decoder = shared_decoder();
+            ZydisDecodedInstruction decoded;
+            ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
+            std::vector<uintptr_t> targets;
+            std::vector<uint8_t> code;
+
+            const std::vector<region_info> regions = executable_regions_of(accessor, module);
+            const auto is_executable = [&regions](uintptr_t address) {
+                return std::any_of(regions.begin(), regions.end(), [address](const region_info& region) {
+                    return address >= region.base && address < region.base + region.size;
+                });
+            };
+
+            for (const auto& function : functions) {
+                code.resize(function.size);
+                const size_t bytes_read = accessor.read(function.address, code.data(), code.size());
+                size_t cursor = 0;
+                while (cursor < bytes_read) {
+                    if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, code.data() + cursor, bytes_read - cursor, &decoded, operands))) {
+                        break;
+                    }
+                    if ((decoded.mnemonic == ZYDIS_MNEMONIC_CALL || decoded.mnemonic == ZYDIS_MNEMONIC_JMP)
+                        && operands[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE
+                        && operands[0].imm.is_relative) {
+                        const uintptr_t target = resolve_rip_relative(function.address + cursor,
+                                                                         decoded.length,
+                                                                         static_cast<int32_t>(operands[0].imm.value.s));
+                        const bool leaves_function = target < function.address || target >= function.address + function.size;
+                        if (leaves_function && is_executable(target)) {
+                            targets.push_back(target);
+                        }
+                    }
+                    cursor += decoded.length;
+                }
+            }
+
+            std::vector<uintptr_t> destinations;
+            for (const uintptr_t target : targets) {
+                const auto destination = follow_jump_thunks(accessor, target);
+                if (destination.has_value() && is_executable(*destination) && !lies_inside_any(known_ranges, *destination)) {
+                    destinations.push_back(*destination);
+                }
+            }
+            std::sort(destinations.begin(), destinations.end());
+            destinations.erase(std::unique(destinations.begin(), destinations.end()), destinations.end());
+
+            std::vector<function_entry> found;
+            for (const uintptr_t destination : destinations) {
+                function_entry entry;
+                entry.address = destination;
+                entry.source = function_source::call_target;
+                found.push_back(entry);
+            }
+            return found;
+        }
+    }
+
+    std::vector<function_entry> find_functions_in_process(const process& target_process,
+                                                             std::string_view module_name,
+                                                             size_t max_results) {
+        std::vector<function_entry> functions;
+        memory_accessor& bound_accessor = target_process.accessor();
+        const auto resolved = bound_accessor.find_module(module_name);
+        if (!resolved.has_value()) {
+            bytebinder::log(log_level::error,
+                              std::string("find_functions: module not found: ") + std::string(module_name));
+            return functions;
+        }
+
+        std::vector<function_entry> fragments;
+        read_unwind_table(bound_accessor, *resolved, functions, fragments);
+
+        const auto by_address = [](const function_entry& left, const function_entry& right) {
+            return left.address < right.address;
+        };
+        if (functions.empty()) {
+            for (const uintptr_t address : find_prologues_in_process(target_process, module_name, max_results)) {
+                function_entry entry;
+                entry.address = address;
+                entry.source = function_source::prologue;
+                functions.push_back(entry);
+            }
+            return functions;
+        }
+
+        std::vector<function_entry> known_ranges = functions;
+        known_ranges.insert(known_ranges.end(), fragments.begin(), fragments.end());
+        std::sort(known_ranges.begin(), known_ranges.end(), by_address);
+
+        const std::vector<function_entry> call_targets = find_call_targets(bound_accessor, *resolved, functions, known_ranges);
+        functions.insert(functions.end(), call_targets.begin(), call_targets.end());
+        std::sort(functions.begin(), functions.end(), by_address);
+        functions.erase(std::unique(functions.begin(), functions.end(),
+            [](const function_entry& left, const function_entry& right) { return left.address == right.address; }),
+            functions.end());
+
+        if (max_results != 0 && functions.size() > max_results) {
+            functions.resize(max_results);
+        }
+        return functions;
     }
 
     namespace {
